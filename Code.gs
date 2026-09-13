@@ -42,6 +42,7 @@ function onOpen() {
     .addItem('Buka penjana eRPH', 'showErphSidebar')
     .addItem('Jana semua slot tab aktif', 'generateAllActiveSlots')
     .addItem('Tetapkan API Gemini', 'setGeminiApiKey')
+    .addItem('Sambungkan fail eRPH semasa untuk PWA', 'setErphSpreadsheet')
     .addToUi();
 }
 
@@ -68,12 +69,33 @@ function setGeminiApiKey() {
   ui.alert('API Gemini telah disimpan. Anda kini boleh membuka Smart eRPH AI.');
 }
 
+function setErphSpreadsheet() {
+  const ss = SpreadsheetApp.getActive();
+  PropertiesService.getScriptProperties().setProperty('ERPH_SPREADSHEET_ID', ss.getId());
+  SpreadsheetApp.getUi().alert('Fail eRPH ini telah disambungkan kepada PWA.');
+}
+
 function getSidebarBootstrap() {
   return {
     subjects: ERPH.SUBJECTS,
     activeSheet: SpreadsheetApp.getActiveSheet().getName(),
     today: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd')
   };
+}
+
+function getWorkbook_() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty('ERPH_SPREADSHEET_ID');
+  if (spreadsheetId) return SpreadsheetApp.openById(spreadsheetId);
+  return SpreadsheetApp.getActive();
+}
+
+function getWorksheet_(expectedName) {
+  const workbook = getWorkbook_();
+  const exact = workbook.getSheetByName(expectedName);
+  if (exact) return exact;
+  const normalise = name => String(name).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const expected = normalise(expectedName);
+  return workbook.getSheets().find(sheet => normalise(sheet.getName()) === expected) || null;
 }
 
 function getSlotsForDate(dateText) {
@@ -122,8 +144,8 @@ function generateWeekFromPwa_(payload) {
   ERPH.DAYS.forEach((sheetName, offset) => {
     if (!selectedDays[sheetName]) return;
     const date = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + offset, 12, 0, 0);
-    const sheet = SpreadsheetApp.getActive().getSheetByName(sheetName);
-    if (!sheet) throw new Error(`Tab ${sheetName} tidak ditemui.`);
+    const sheet = getWorksheet_(sheetName);
+    if (!sheet) throw new Error(`Tab ${sheetName} tidak ditemui dalam fail eRPH yang disambungkan.`);
     sheet.getRange('D7').setValue(week);
     sheet.getRange('D9').setValue(ERPH.DAY_BY_INDEX[date.getDay()]);
     sheet.getRange('D11').setValue(date);
@@ -195,8 +217,8 @@ function findCurriculumByExistingTitle_(subject, form, existingTitle) {
 
 function getCurriculumOptions(subject, form) {
   const sourceName = getSourceSheetName_(subject, Number(form));
-  const sheet = SpreadsheetApp.getActive().getSheetByName(sourceName);
-  if (!sheet) throw new Error(`Tab data ${sourceName} tidak ditemui.`);
+  const sheet = getWorksheet_(sourceName);
+  if (!sheet) throw new Error(`Tab data ${sourceName} tidak ditemui dalam fail eRPH yang disambungkan.`);
 
   const values = sheet.getDataRange().getDisplayValues();
   const headers = values.shift();
@@ -250,8 +272,8 @@ function getTargetSheet_(dateText) {
   const date = parseIsoDate_(dateText);
   const day = ERPH.DAY_BY_INDEX[date.getDay()].toUpperCase();
   if (!ERPH.DAYS.includes(day)) throw new Error('Tarikh yang dipilih ialah hujung minggu. Sila pilih tarikh Isnin hingga Jumaat.');
-  const sheet = SpreadsheetApp.getActive().getSheetByName(day);
-  if (!sheet) throw new Error(`Tab ${day} tidak ditemui.`);
+  const sheet = getWorksheet_(day);
+  if (!sheet) throw new Error(`Tab ${day} tidak ditemui dalam fail eRPH yang disambungkan.`);
   return sheet;
 }
 

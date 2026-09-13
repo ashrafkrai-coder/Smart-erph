@@ -8,12 +8,11 @@
   <title>Smart eRPH AI</title>
 </head><body>
 <main class="phone-shell">
-  <header class="topbar"><div><p class="eyebrow">SMK TAMAN MEDAN</p><h1>Smart eRPH <span>AI</span></h1></div><button class="icon-button" id="settingsButton" aria-label="Tetapan sambungan">⚙</button></header>
+  <header class="topbar"><div><p class="eyebrow">SMK TAMAN MEDAN</p><h1>Smart eRPH <span>AI</span></h1></div><div class="secure-badge">SELAMAT</div></header>
   <section class="hero"><p class="hero-label">PENJANAAN MINGGUAN</p><h2>RPH siap untuk<br>semua kelas.</h2><p>Pilih minggu dan tarikh Isnin. Hari cuti hanya perlu dinyah tanda.</p></section>
   <section class="card setup-card"><label for="week">Minggu</label><select id="week" aria-label="Pilih minggu"></select><label for="monday">Tarikh Isnin</label><input id="monday" type="date" aria-label="Pilih tarikh Isnin"><p class="helper" id="mondayHint"></p></section>
   <section class="days-section"><div class="section-heading"><h2>Hari untuk dijana</h2><button class="text-button" id="selectAll">Tanda semua</button></div><div class="days-card" id="daysList"></div></section>
   <button class="generate-button" id="generateButton"><span>✦</span> Jana eRPH Mingguan</button>
   <section class="status-card hidden" id="statusCard" aria-live="polite"><div class="spinner" id="spinner"></div><div><strong id="statusTitle">Sedang menyediakan eRPH</strong><p id="statusText">Sila tunggu sebentar.</p></div></section>
 </main>
-<dialog id="settingsDialog"><form method="dialog"><div class="sheet-handle"></div><h2>Tetapan Sambungan</h2><p>Maklumat ini disimpan pada peranti ini sahaja.</p><label for="scriptUrl">URL Web App Apps Script</label><input id="scriptUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec"><label for="apiToken">Token akses PWA</label><input id="apiToken" type="password" placeholder="PWA_API_TOKEN"><div class="dialog-actions"><button value="cancel" class="cancel-button">Batal</button><button value="save" id="saveSettings" class="save-button">Simpan</button></div></form></dialog>
 <script src="app.js"></script></body></html>
