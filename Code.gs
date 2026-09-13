@@ -30,8 +30,9 @@ function doPost(e) {
   try {
     const payload = JSON.parse(e.postData?.contents || '{}');
     verifyPwaToken_(payload.apiToken);
-    if (payload.action !== 'generate_week') throw new Error('Tindakan API tidak sah.');
-    return jsonResponse_(generateWeekFromPwa_(payload));
+    if (payload.action === 'generate_week') return jsonResponse_(generateWeekFromPwa_(payload));
+    if (payload.action === 'prepare_classroom') return jsonResponse_(prepareClassroomFromPwa_(payload));
+    throw new Error('Tindakan API tidak sah.');
   } catch (error) {
     return jsonResponse_({ ok: false, error: error.message || String(error) });
   }
@@ -192,6 +193,19 @@ function generateWeekFromPwa_(payload) {
     return all;
   }, {});
   return { ok: true, week, monday: payload.monday, generatedSlots: dayJobs.length, summary };
+}
+
+function prepareClassroomFromPwa_(payload) {
+  const week = Number(payload.week);
+  if (!Number.isInteger(week) || week < 1 || week > 45) throw new Error('Minggu mestilah antara 1 hingga 45.');
+  const monday = parseIsoDate_(payload.monday);
+  if (monday.getDay() !== 1) throw new Error('Tarikh yang dipilih mestilah hari Isnin.');
+
+  const workbook = getWorkbook_();
+  const mondayLabel = Utilities.formatDate(monday, Session.getScriptTimeZone(), 'dd-MM-yyyy');
+  const fileName = `eRPH Minggu ${week} (${mondayLabel})`;
+  const copy = DriveApp.getFileById(workbook.getId()).makeCopy(fileName);
+  return { ok: true, fileName: copy.getName(), fileUrl: copy.getUrl() };
 }
 
 function buildAutoJob_(sheet, slotStartRow, week, date) {
