@@ -14,7 +14,7 @@ export default async function handler(request, response) {
     const upstream = await fetch(scriptUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ ...request.body, action: 'generate_week', apiToken })
+      body: JSON.stringify({ ...request.body, apiToken })
     });
     const raw = await upstream.text();
     let body;
