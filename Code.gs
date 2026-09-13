@@ -41,18 +41,11 @@ function doPost(e) {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Smart eRPH AI')
-    .addItem('Buka penjana eRPH', 'showErphSidebar')
     .addItem('Jana semua slot tab aktif', 'generateAllActiveSlots')
     .addItem('Baiki strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
     .addItem('Tetapkan API Gemini', 'setGeminiApiKey')
     .addItem('Sambungkan fail eRPH semasa untuk PWA', 'setErphSpreadsheet')
     .addToUi();
-}
-
-function showErphSidebar() {
-  const html = HtmlService.createHtmlOutputFromFile('Sidebar')
-    .setTitle('Smart eRPH AI');
-  SpreadsheetApp.getUi().showSidebar(html);
 }
 
 function setGeminiApiKey() {
@@ -103,14 +96,6 @@ function fillMissingStudentCentredStrategies() {
   SpreadsheetApp.getUi().alert(`Selesai: ${updated} slot kosong telah diisi dengan strategi pembelajaran berpusatkan murid dan kolaboratif.${note}`);
 }
 
-function getSidebarBootstrap() {
-  return {
-    subjects: ERPH.SUBJECTS,
-    activeSheet: SpreadsheetApp.getActiveSheet().getName(),
-    today: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd')
-  };
-}
-
 function getWorkbook_() {
   const spreadsheetId = PropertiesService.getScriptProperties().getProperty('ERPH_SPREADSHEET_ID');
   if (spreadsheetId) return SpreadsheetApp.openById(spreadsheetId);
@@ -124,11 +109,6 @@ function getWorksheet_(expectedName) {
   const normalise = name => String(name).toUpperCase().replace(/[^A-Z0-9]/g, '');
   const expected = normalise(expectedName);
   return workbook.getSheets().find(sheet => normalise(sheet.getName()) === expected) || null;
-}
-
-function getSlotsForDate(dateText) {
-  const sheet = getTargetSheet_(dateText);
-  return { targetSheet: sheet.getName(), slots: getSlotsFromSheet_(sheet) };
 }
 
 function getSlotsFromSheet_(sheet) {
@@ -275,34 +255,6 @@ function getCurriculumOptions(subject, form) {
   };
 }
 
-function generateAndWriteErph(form) {
-  validateRequest_(form);
-  const target = getTargetSheet_(form.date);
-  const slotStartRow = validateSlot_(target, Number(form.slotStartRow));
-  const selected = resolveCurriculum_(form.subject, Number(form.form), form.curriculum);
-  const generated = callGemini_(buildPrompt_(form, selected));
-  writeErph_(target, slotStartRow, form, selected, generated);
-  SpreadsheetApp.flush();
-  return { ok: true, targetSheet: target.getName(), message: `eRPH berjaya dimasukkan ke tab ${target.getName()}.` };
-}
-
-function validateSlot_(sheet, slotStartRow) {
-  // Semakan dibuat terus pada tab sasaran supaya slot daripada hari lain tidak boleh digunakan.
-  const isSlot = sheet.getRange(slotStartRow, 2).getDisplayValue().trim().toUpperCase() === 'TARIKH' &&
-    Boolean(sheet.getRange(slotStartRow, 4).getFormula());
-  if (!isSlot) throw new Error('Slot eRPH tidak sah bagi tab hari ini. Sila muat semula sidebar dan pilih slot semula.');
-  return slotStartRow;
-}
-
-function resolveCurriculum_(subject, form, selectedFromSidebar) {
-  const source = getCurriculumOptions(subject, form).options;
-  const selected = source.find(item =>
-    item.code === selectedFromSidebar.code && item.title === selectedFromSidebar.title
-  );
-  if (!selected) throw new Error('Tajuk tidak sepadan dengan tab DSKP/sukatan bagi mata pelajaran dan tingkatan yang dipilih.');
-  return selected;
-}
-
 function getSourceSheetName_(subject, form) {
   if (subject === ERPH.SUBJECTS.PAI && [4, 5].includes(form)) return `DSKP_PAI_T${form}`;
   if (subject === ERPH.SUBJECTS.KKQ && [1, 2, 3].includes(form)) return `SUKATAN_KKQ_T${form}`;
@@ -316,16 +268,6 @@ function getTargetSheet_(dateText) {
   const sheet = getWorksheet_(day);
   if (!sheet) throw new Error(`Tab ${day} tidak ditemui dalam fail eRPH yang disambungkan.`);
   return sheet;
-}
-
-function validateRequest_(form) {
-  if (!form || !form.date || !form.week || !form.form || !form.className || !form.subject || !form.curriculum || !form.slotStartRow) {
-    throw new Error('Lengkapkan semua maklumat wajib dahulu.');
-  }
-  getSourceSheetName_(form.subject, Number(form.form));
-  if (![ERPH.SUBJECTS.PAI, ERPH.SUBJECTS.KKQ].includes(form.subject)) {
-    throw new Error('Mata pelajaran tidak sah.');
-  }
 }
 
 function buildPrompt_(form, c) {
@@ -358,15 +300,6 @@ PULANGKAN JSON SAHAJA, tanpa markdown, dengan skema tepat ini:
  "starter":["","",""], "activity":["","",""], "explanation":["","",""], "closure":["","",""], "assessmentDetails":["","",""],
  "references":"", "reflection":"", "followUp":"", "strategy":"", "method":"", "teachingAids":"", "pa21":"", "kbkk":"", "iThink":"", "values":"", "thinkingSkill":"", "multipleIntelligences":"", "kbatCurriculum":"", "kbatCoCurriculum":"", "emk":"", "assessmentTypes":["Pemerhatian","Lisan","Kuiz"]
 }`;
-}
-
-function callGemini_(prompt) {
-  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  if (!key) throw new Error('GEMINI_API_KEY belum disetkan dalam Script Properties.');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`;
-  const payload = { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.35 } };
-  const response = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload), muteHttpExceptions: true });
-  return parseGeminiResponse_(response);
 }
 
 function callGeminiBatch_(prompts) {
