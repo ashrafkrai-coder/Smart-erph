@@ -5,6 +5,7 @@ const ERPH = Object.freeze({
     PAI: 'Pendidikan Agama Islam (PAI)',
     KKQ: 'Kelas Kemahiran al-Quran (KKQ)'
   },
+  STUDENT_CENTRED_STRATEGY: 'Pembelajaran Berpusatkan Murid dan Kolaboratif',
   ASSESSMENT_ROWS: {
     'Amali / Eksperimen': 53,
     Projek: 54,
@@ -41,6 +42,7 @@ function onOpen() {
     .createMenu('Smart eRPH AI')
     .addItem('Buka penjana eRPH', 'showErphSidebar')
     .addItem('Jana semua slot tab aktif', 'generateAllActiveSlots')
+    .addItem('Isi strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
     .addItem('Tetapkan API Gemini', 'setGeminiApiKey')
     .addItem('Sambungkan fail eRPH semasa untuk PWA', 'setErphSpreadsheet')
     .addToUi();
@@ -73,6 +75,28 @@ function setErphSpreadsheet() {
   const ss = SpreadsheetApp.getActive();
   PropertiesService.getScriptProperties().setProperty('ERPH_SPREADSHEET_ID', ss.getId());
   SpreadsheetApp.getUi().alert('Fail eRPH ini telah disambungkan kepada PWA.');
+}
+
+// Pembetulan sekali jalan untuk rekod lama: hanya isi medan strategi yang masih kosong.
+function fillMissingStudentCentredStrategies() {
+  let updated = 0;
+  const missingTabs = [];
+  ERPH.DAYS.forEach(day => {
+    const sheet = getWorksheet_(day);
+    if (!sheet) {
+      missingTabs.push(day);
+      return;
+    }
+    getSlotsFromSheet_(sheet).forEach(slot => {
+      const strategyCell = sheet.getRange(Number(slot.value) + 1, 13);
+      if (!String(strategyCell.getDisplayValue()).trim()) {
+        strategyCell.setValue(ERPH.STUDENT_CENTRED_STRATEGY);
+        updated++;
+      }
+    });
+  });
+  const note = missingTabs.length ? ` Tab tidak ditemui: ${missingTabs.join(', ')}.` : '';
+  SpreadsheetApp.getUi().alert(`Selesai: ${updated} slot kosong telah diisi dengan strategi pembelajaran berpusatkan murid dan kolaboratif.${note}`);
 }
 
 function getSidebarBootstrap() {
@@ -308,6 +332,8 @@ Cadangan objektif: ${c.suggestedObjectives}
 Kata kunci: ${c.keywords}
 Sumber: ${c.source}
 
+Untuk medan "strategy", WAJIB tulis tepat: "Pembelajaran Berpusatkan Murid dan Kolaboratif".
+
 PULANGKAN JSON SAHAJA, tanpa markdown, dengan skema tepat ini:
 {
  "theme":"", "title":"", "skill":"", "standardContent":"", "standardLearning":"",
@@ -368,7 +394,8 @@ function writeErph_(sheet, slotStartRow, form, c, g) {
   putSlot(37, 4, g.references || c.source); putSlot(42, 4, g.reflection); putSlot(47, 4, g.followUp);
 
   // Lajur sokongan sebelah kanan template.
-  putSlot(1, 13, g.strategy); putSlot(5, 13, g.method); putSlot(8, 13, g.teachingAids); putSlot(11, 13, g.pa21);
+  // Strategi ini diwajibkan untuk setiap kelas walaupun model memulangkan medan kosong.
+  putSlot(1, 13, String(g.strategy || '').trim() || ERPH.STUDENT_CENTRED_STRATEGY); putSlot(5, 13, g.method); putSlot(8, 13, g.teachingAids); putSlot(11, 13, g.pa21);
   putSlot(15, 13, g.kbkk); putSlot(17, 13, g.iThink); putSlot(20, 13, g.values); putSlot(23, 13, g.thinkingSkill);
   putSlot(26, 13, g.multipleIntelligences); putSlot(31, 13, g.kbatCurriculum); putSlot(33, 13, g.kbatCoCurriculum); putSlot(36, 13, g.emk);
 
