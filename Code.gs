@@ -42,7 +42,7 @@ function onOpen() {
     .createMenu('Smart eRPH AI')
     .addItem('Buka penjana eRPH', 'showErphSidebar')
     .addItem('Jana semua slot tab aktif', 'generateAllActiveSlots')
-    .addItem('Isi strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
+    .addItem('Baiki strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
     .addItem('Tetapkan API Gemini', 'setGeminiApiKey')
     .addItem('Sambungkan fail eRPH semasa untuk PWA', 'setErphSpreadsheet')
     .addToUi();
@@ -77,7 +77,8 @@ function setErphSpreadsheet() {
   SpreadsheetApp.getUi().alert('Fail eRPH ini telah disambungkan kepada PWA.');
 }
 
-// Pembetulan sekali jalan untuk rekod lama: hanya isi medan strategi yang masih kosong.
+// Pembetulan sekali jalan untuk rekod lama. Dalam template, M(slot+1) ialah label
+// "STRATEGI P&P" dan M(slot+2) ialah nilai strategi yang sebenar.
 function fillMissingStudentCentredStrategies() {
   let updated = 0;
   const missingTabs = [];
@@ -88,7 +89,9 @@ function fillMissingStudentCentredStrategies() {
       return;
     }
     getSlotsFromSheet_(sheet).forEach(slot => {
-      const strategyCell = sheet.getRange(Number(slot.value) + 1, 13);
+      const slotStartRow = Number(slot.value);
+      sheet.getRange(slotStartRow + 1, 13).setValue('STRATEGI P&P');
+      const strategyCell = sheet.getRange(slotStartRow + 2, 13);
       if (!String(strategyCell.getDisplayValue()).trim()) {
         strategyCell.setValue(ERPH.STUDENT_CENTRED_STRATEGY);
         updated++;
@@ -394,8 +397,9 @@ function writeErph_(sheet, slotStartRow, form, c, g) {
   putSlot(37, 4, g.references || c.source); putSlot(42, 4, g.reflection); putSlot(47, 4, g.followUp);
 
   // Lajur sokongan sebelah kanan template.
+  // M(slot+1) ialah label, manakala M(slot+2) ialah nilai strategi sebenar.
   // Strategi ini diwajibkan untuk setiap kelas walaupun model memulangkan medan kosong.
-  putSlot(1, 13, String(g.strategy || '').trim() || ERPH.STUDENT_CENTRED_STRATEGY); putSlot(5, 13, g.method); putSlot(8, 13, g.teachingAids); putSlot(11, 13, g.pa21);
+  putSlot(1, 13, 'STRATEGI P&P'); putSlot(2, 13, String(g.strategy || '').trim() || ERPH.STUDENT_CENTRED_STRATEGY); putSlot(5, 13, g.method); putSlot(8, 13, g.teachingAids); putSlot(11, 13, g.pa21);
   putSlot(15, 13, g.kbkk); putSlot(17, 13, g.iThink); putSlot(20, 13, g.values); putSlot(23, 13, g.thinkingSkill);
   putSlot(26, 13, g.multipleIntelligences); putSlot(31, 13, g.kbatCurriculum); putSlot(33, 13, g.kbatCoCurriculum); putSlot(36, 13, g.emk);
 
