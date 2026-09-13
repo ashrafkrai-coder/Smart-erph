@@ -44,6 +44,8 @@ function onOpen() {
     .addItem('Jana semua slot tab aktif', 'generateAllActiveSlots')
     .addItem('Baiki strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
     .addItem('Tetapkan API Gemini', 'setGeminiApiKey')
+    .addItem('Tetapkan API OpenRouter', 'setOpenRouterApiKey')
+    .addItem('Pilih AI Provider (Gemini/OpenRouter)', 'setAiProvider')
     .addItem('Sambungkan fail eRPH semasa untuk PWA', 'setErphSpreadsheet')
     .addToUi();
 }
@@ -63,6 +65,42 @@ function setGeminiApiKey() {
   }
   PropertiesService.getScriptProperties().setProperty('GEMINI_API_KEY', apiKey);
   ui.alert('API Gemini telah disimpan. Anda kini boleh membuka Smart eRPH AI.');
+}
+
+function setOpenRouterApiKey() {
+  const ui = SpreadsheetApp.getUi();
+  const answer = ui.prompt(
+    'Tetapkan API OpenRouter',
+    'Tampalkan API key daripada openrouter.ai/keys. Ia disimpan dalam Script Properties projek ini.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (answer.getSelectedButton() !== ui.Button.OK) return;
+  const apiKey = answer.getResponseText().trim();
+  if (!apiKey) {
+    ui.alert('API key tidak dimasukkan.');
+    return;
+  }
+  PropertiesService.getScriptProperties().setProperty('OPENROUTER_API_KEY', apiKey);
+  ui.alert('API OpenRouter telah disimpan.');
+}
+
+function setAiProvider() {
+  const ui = SpreadsheetApp.getUi();
+  const properties = PropertiesService.getScriptProperties();
+  const current = properties.getProperty('AI_PROVIDER') || 'gemini';
+  const answer = ui.prompt(
+    'Pilih AI Provider',
+    `Taip "gemini" atau "openrouter". (Semasa: ${current})`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (answer.getSelectedButton() !== ui.Button.OK) return;
+  const provider = answer.getResponseText().trim().toLowerCase();
+  if (!['gemini', 'openrouter'].includes(provider)) {
+    ui.alert('Nilai tidak sah. Taip "gemini" atau "openrouter".');
+    return;
+  }
+  properties.setProperty('AI_PROVIDER', provider);
+  ui.alert(`AI Provider ditetapkan kepada: ${provider}`);
 }
 
 function setErphSpreadsheet() {
@@ -291,7 +329,7 @@ Cadangan objektif: ${c.suggestedObjectives}
 Kata kunci: ${c.keywords}
 Sumber: ${c.source}
 
-Untuk medan "strategy", WAJIB tulis tepat: "Pembelajaran Berpusatkan Murid dan Kolaboratif".
+Untuk medan "strategy", pilih SATU strategi pengajaran berpusatkan murid dan kolaboratif yang PALING SESUAI dengan tajuk, kemahiran dan aktiviti di atas (contoh: Pembelajaran Berasaskan Inkuiri, Pembelajaran Berasaskan Projek, Pembelajaran Koperatif, Pembelajaran Berasaskan Masalah, Think-Pair-Share, Round Robin, Perbincangan Berkumpulan, Simulasi/Main Peranan). Jangan ulang frasa generik yang sama setiap kali — nyatakan strategi khusus yang relevan dengan kandungan pelajaran ini.
 
 PULANGKAN JSON SAHAJA, tanpa markdown, dengan skema tepat ini:
 {
@@ -303,6 +341,13 @@ PULANGKAN JSON SAHAJA, tanpa markdown, dengan skema tepat ini:
 }
 
 function callGeminiBatch_(prompts) {
+  const provider = (PropertiesService.getScriptProperties().getProperty('AI_PROVIDER') || 'gemini').toLowerCase();
+  if (provider === 'openrouter') return callOpenRouterBatch_(prompts);
+  if (provider !== 'gemini') throw new Error(`AI_PROVIDER tidak sah: "${provider}". Guna "gemini" atau "openrouter".`);
+  return callGeminiApiBatch_(prompts);
+}
+
+function callGeminiApiBatch_(prompts) {
   const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
   if (!key) throw new Error('GEMINI_API_KEY belum disetkan dalam Script Properties.');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`;
@@ -322,6 +367,43 @@ function parseGeminiResponse_(response) {
   const text = body.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error('Gemini tidak memulangkan kandungan eRPH.');
   try { return JSON.parse(text); } catch (e) { throw new Error('Respons Gemini bukan JSON yang sah. Sila jana semula.'); }
+}
+
+function callOpenRouterBatch_(prompts) {
+  const key = PropertiesService.getScriptProperties().getProperty('OPENROUTER_API_KEY');
+  if (!key) throw new Error('OPENROUTER_API_KEY belum disetkan dalam Script Properties.');
+  const model = PropertiesService.getScriptProperties().getProperty('OPENROUTER_MODEL') || 'openai/gpt-4o-mini';
+  const url = 'https://openrouter.ai/api/v1/chat/completions';
+  const requests = prompts.map(prompt => ({
+    url,
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: `Bearer ${key}` },
+    payload: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+      temperature: 0.35
+    }),
+    muteHttpExceptions: true
+  }));
+  return UrlFetchApp.fetchAll(requests).map(parseOpenRouterResponse_);
+}
+
+function parseOpenRouterResponse_(response) {
+  const body = JSON.parse(response.getContentText());
+  if (response.getResponseCode() >= 300) throw new Error(body.error?.message || 'OpenRouter gagal menjana eRPH.');
+  const text = body.choices?.[0]?.message?.content;
+  if (!text) throw new Error('OpenRouter tidak memulangkan kandungan eRPH.');
+  try { return JSON.parse(extractJson_(text)); } catch (e) { throw new Error('Respons OpenRouter bukan JSON yang sah. Sila jana semula.'); }
+}
+
+function extractJson_(text) {
+  const cleaned = String(text).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) return cleaned;
+  return cleaned.slice(start, end + 1);
 }
 
 function writeErph_(sheet, slotStartRow, form, c, g) {
@@ -345,7 +427,7 @@ function writeErph_(sheet, slotStartRow, form, c, g) {
 
   // Lajur sokongan sebelah kanan template.
   // M(slot+1) ialah label, manakala M(slot+2) ialah nilai strategi sebenar.
-  // Strategi ini diwajibkan untuk setiap kelas walaupun model memulangkan medan kosong.
+  // Strategi dipilih oleh AI ikut tajuk; fallback generik hanya jika medan kosong.
   putSlot(1, 13, 'STRATEGI P&P'); putSlot(2, 13, String(g.strategy || '').trim() || ERPH.STUDENT_CENTRED_STRATEGY); putSlot(5, 13, g.method); putSlot(8, 13, g.teachingAids); putSlot(11, 13, g.pa21);
   putSlot(15, 13, g.kbkk); putSlot(17, 13, g.iThink); putSlot(20, 13, g.values); putSlot(23, 13, g.thinkingSkill);
   putSlot(26, 13, g.multipleIntelligences); putSlot(31, 13, g.kbatCurriculum); putSlot(33, 13, g.kbatCoCurriculum); putSlot(36, 13, g.emk);
