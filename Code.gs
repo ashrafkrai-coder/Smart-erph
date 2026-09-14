@@ -348,17 +348,33 @@ function callGeminiBatch_(prompts) {
 }
 
 function callGeminiApiBatch_(prompts) {
-  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  if (!key) throw new Error('GEMINI_API_KEY belum disetkan dalam Script Properties.');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`;
-  const requests = prompts.map(prompt => ({
-    url,
+  const properties = PropertiesService.getScriptProperties();
+  const primaryKey = properties.getProperty('GEMINI_API_KEY');
+  const backupKey = properties.getProperty('GEMINI_API_KEY_BACKUP');
+  if (!primaryKey) throw new Error('GEMINI_API_KEY belum disetkan dalam Script Properties.');
+
+  const buildRequests_ = key => prompts.map(prompt => ({
+    url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`,
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.35 } }),
     muteHttpExceptions: true
   }));
-  return UrlFetchApp.fetchAll(requests).map(parseGeminiResponse_);
+
+  const responses = UrlFetchApp.fetchAll(buildRequests_(primaryKey));
+
+  if (backupKey) {
+    const retryIndexes = responses
+      .map((response, index) => (response.getResponseCode() === 429 ? index : -1))
+      .filter(index => index !== -1);
+    if (retryIndexes.length) {
+      const backupRequests = buildRequests_(backupKey);
+      const retryResponses = UrlFetchApp.fetchAll(retryIndexes.map(index => backupRequests[index]));
+      retryIndexes.forEach((originalIndex, i) => { responses[originalIndex] = retryResponses[i]; });
+    }
+  }
+
+  return responses.map(parseGeminiResponse_);
 }
 
 function parseGeminiResponse_(response) {
