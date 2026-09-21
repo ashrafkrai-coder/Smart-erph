@@ -43,11 +43,175 @@ function onOpen() {
     .createMenu('Smart eRPH AI')
     .addItem('Jana semua slot tab aktif', 'generateAllActiveSlots')
     .addItem('Baiki strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
+    .addSeparator()
+    .addItem('Cipta salinan Jawi seluruh fail', 'createJawiWorkbookCopy')
+    .addSeparator()
     .addItem('Tetapkan API Gemini', 'setGeminiApiKey')
     .addItem('Tetapkan API OpenRouter', 'setOpenRouterApiKey')
     .addItem('Pilih AI Provider (Gemini/OpenRouter)', 'setAiProvider')
     .addItem('Sambungkan fail eRPH semasa untuk PWA', 'setErphSpreadsheet')
     .addToUi();
+}
+
+/**
+ * Cipta salinan penuh workbook dan tukar teks literal Rumi kepada Jawi.
+ * Fail asal tidak disentuh. Formula, nombor, tarikh, checkbox dan URL dikekalkan.
+ * Nama tab juga dikekalkan supaya struktur Smart eRPH tidak rosak.
+ */
+function createJawiWorkbookCopy() {
+  const ui = SpreadsheetApp.getUi();
+  const source = SpreadsheetApp.getActive();
+  const answer = ui.alert(
+    'Cipta salinan Jawi',
+    'Sistem akan mencipta salinan fail ini dan menukar teks Rumi kepada Jawi. Fail asal, formula, nombor, tarikh, checkbox dan nama tab tidak akan diubah.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (answer !== ui.Button.OK) return;
+
+  source.toast('Mencipta salinan eRPH versi Jawi...', 'Smart eRPH AI', 5);
+  const sourceFile = DriveApp.getFileById(source.getId());
+  const copyFile = sourceFile.makeCopy(source.getName() + ' — Jawi');
+  const jawiWorkbook = SpreadsheetApp.openById(copyFile.getId());
+
+  try {
+    const stats = convertWorkbookToJawi_(jawiWorkbook, source);
+    SpreadsheetApp.flush();
+    ui.alert(
+      'Penukaran Jawi selesai',
+      'Fail asal tidak diubah.\n\n' +
+      'Tab diproses: ' + stats.sheets + '\n' +
+      'Sel teks ditukar: ' + stats.cells + '\n' +
+      'Teks unik dihantar ke AI: ' + stats.uniqueTexts + '\n\n' +
+      'Salinan Jawi:\n' + copyFile.getUrl(),
+      ui.ButtonSet.OK
+    );
+  } catch (error) {
+    copyFile.setName(source.getName() + ' — Jawi (TIDAK LENGKAP)');
+    throw error;
+  }
+}
+
+function convertWorkbookToJawi_(workbook, progressWorkbook) {
+  const sourceUi = progressWorkbook || SpreadsheetApp.getActive();
+  const sheets = workbook.getSheets();
+  const unique = new Map();
+  let candidateCells = 0;
+
+  sheets.forEach((sheet, sheetIndex) => {
+    sourceUi.toast(
+      'Membaca tab ' + (sheetIndex + 1) + '/' + sheets.length + ': ' + sheet.getName(),
+      'Smart eRPH AI — Jawi',
+      5
+    );
+
+    const range = sheet.getDataRange();
+    const values = range.getValues();
+    const formulas = range.getFormulas();
+
+    for (let row = 0; row < values.length; row++) {
+      for (let col = 0; col < values[row].length; col++) {
+        if (formulas[row][col]) continue;
+        const value = values[row][col];
+        if (typeof value !== 'string' || !shouldTransliterateToJawi_(value)) continue;
+
+        candidateCells++;
+        if (!unique.has(value)) unique.set(value, []);
+        unique.get(value).push({
+          sheet: sheet,
+          row: range.getRow() + row,
+          col: range.getColumn() + col
+        });
+      }
+    }
+  });
+
+  const entries = Array.from(unique.keys()).map((text, index) => ({ id: index + 1, text: text }));
+  if (!entries.length) return { sheets: sheets.length, cells: 0, uniqueTexts: 0 };
+
+  sourceUi.toast('Menukar ' + entries.length + ' teks unik kepada Jawi...', 'Smart eRPH AI — Jawi', 5);
+  const translatedById = transliterateJawiEntries_(entries, sourceUi);
+  const idByOriginal = new Map(entries.map(item => [item.text, item.id]));
+  let changedCells = 0;
+
+  unique.forEach((locations, originalText) => {
+    const id = idByOriginal.get(originalText);
+    const jawiText = translatedById.get(id);
+    if (!jawiText || jawiText === originalText) return;
+    locations.forEach(location => {
+      location.sheet.getRange(location.row, location.col).setValue(jawiText);
+      changedCells++;
+    });
+  });
+
+  return { sheets: sheets.length, cells: changedCells, uniqueTexts: entries.length, candidates: candidateCells };
+}
+
+function shouldTransliterateToJawi_(value) {
+  const trimmed = String(value).trim();
+  if (!trimmed) return false;
+  if (!/[A-Za-z]/.test(trimmed)) return false;
+  if (/^(https?:\/\/|www\.)/i.test(trimmed)) return false;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return false;
+  return true;
+}
+
+function transliterateJawiEntries_(entries, progressWorkbook) {
+  const CHUNK_SIZE = 35;
+  const PARALLEL_CHUNKS = 4;
+  const chunks = [];
+  for (let i = 0; i < entries.length; i += CHUNK_SIZE) chunks.push(entries.slice(i, i + CHUNK_SIZE));
+  const resultMap = new Map();
+
+  for (let start = 0; start < chunks.length; start += PARALLEL_CHUNKS) {
+    const group = chunks.slice(start, start + PARALLEL_CHUNKS);
+    const prompts = group.map(buildJawiPrompt_);
+    const results = callGeminiBatch_(prompts);
+
+    results.forEach((result, resultIndex) => {
+      const expectedChunk = group[resultIndex];
+      const items = result && Array.isArray(result.items) ? result.items : [];
+      const returned = new Map(
+        items
+          .filter(item => item && Number.isFinite(Number(item.id)))
+          .map(item => [Number(item.id), String(item.text == null ? '' : item.text)])
+      );
+      expectedChunk.forEach(item => {
+        const converted = returned.get(item.id);
+        if (!converted) throw new Error('AI tidak memulangkan teks Jawi lengkap bagi ID ' + item.id + '. Sila jalankan semula.');
+        resultMap.set(item.id, converted);
+      });
+    });
+
+    if (progressWorkbook) {
+      const done = Math.min(start + PARALLEL_CHUNKS, chunks.length);
+      progressWorkbook.toast('Kemajuan Jawi: ' + done + '/' + chunks.length + ' kelompok selesai', 'Smart eRPH AI — Jawi', 5);
+    }
+  }
+  return resultMap;
+}
+
+function buildJawiPrompt_(items) {
+  return [
+    'Anda ialah pakar transliterasi tulisan Jawi Bahasa Melayu Malaysia.',
+    '',
+    'TUGAS',
+    'Tukar teks Rumi dalam setiap item kepada tulisan Jawi berdasarkan Pedoman Ejaan Jawi Yang Disempurnakan. Ini ialah transliterasi, BUKAN terjemahan.',
+    '',
+    'PERATURAN WAJIB',
+    '1. Kekalkan maksud dan susunan ayat asal.',
+    '2. Kekalkan nombor, tarikh, masa, tanda baca, simbol, baris baharu dan susunan senarai.',
+    '3. Jika sebahagian teks sudah Arab/Jawi, kekalkan bahagian itu dan tukar hanya bahagian Rumi yang sesuai.',
+    '4. Jangan tambah penerangan, nota atau markdown.',
+    '5. Nama orang/tempat dan istilah pinjaman ditulis dalam Jawi mengikut sebutan yang munasabah.',
+    '6. Akronim/kod teknikal seperti DSKP, KSSM, PBD, PAK21, KBAT, KBKK, EMK, AI, KKQ, eRPH, URL dan kod standard boleh dikekalkan dalam Rumi jika penukaran akan menghilangkan identiti kod.',
+    '7. Pulangkan SEMUA ID sekali dan jangan ubah ID.',
+    '',
+    'PULANGKAN JSON SAHAJA dengan struktur tepat:',
+    '{"items":[{"id":1,"text":"..."},{"id":2,"text":"..."}]}',
+    '',
+    'DATA:',
+    JSON.stringify(items)
+  ].join('\n');
 }
 
 function setGeminiApiKey() {
