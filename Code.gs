@@ -560,28 +560,95 @@ function callGeminiApiBatch_(prompts) {
   const backupKey = properties.getProperty('GEMINI_API_KEY_BACKUP');
   if (!primaryKey) throw new Error('GEMINI_API_KEY belum disetkan dalam Script Properties.');
 
-  const buildRequests_ = key => prompts.map(prompt => ({
-    url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`,
+  // Model utama boleh ditukar melalui Script Property GEMINI_MODEL tanpa ubah kod.
+  // Jika model sibuk / rate-limited, sistem akan cuba model stabil lain secara automatik.
+  const preferredModel = properties.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash';
+  const fallbackModels = [
+    preferredModel,
+    'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-2.5-flash'
+  ].filter((model, index, all) => all.indexOf(model) === index);
+
+  const keys = [primaryKey, backupKey].filter(Boolean);
+  const results = new Array(prompts.length);
+  let pending = prompts.map((_, index) => index);
+  let lastErrorMessage = '';
+
+  const buildRequest_ = (prompt, key, model) => ({
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`,
     method: 'post',
     contentType: 'application/json',
-    payload: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.35 } }),
+    payload: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json' }
+    }),
     muteHttpExceptions: true
-  }));
+  });
 
-  const responses = UrlFetchApp.fetchAll(buildRequests_(primaryKey));
+  // Cuba setiap model. Untuk setiap model, cuba primary key kemudian backup key jika ada.
+  for (const model of fallbackModels) {
+    for (const key of keys) {
+      if (!pending.length) break;
 
-  if (backupKey) {
-    const retryIndexes = responses
-      .map((response, index) => (response.getResponseCode() === 429 ? index : -1))
-      .filter(index => index !== -1);
-    if (retryIndexes.length) {
-      const backupRequests = buildRequests_(backupKey);
-      const retryResponses = UrlFetchApp.fetchAll(retryIndexes.map(index => backupRequests[index]));
-      retryIndexes.forEach((originalIndex, i) => { responses[originalIndex] = retryResponses[i]; });
+      const responses = UrlFetchApp.fetchAll(
+        pending.map(index => buildRequest_(prompts[index], key, model))
+      );
+      const nextPending = [];
+
+      responses.forEach((response, responseIndex) => {
+        const originalIndex = pending[responseIndex];
+        const code = response.getResponseCode();
+
+        if (code >= 200 && code < 300) {
+          try {
+            results[originalIndex] = parseGeminiResponse_(response);
+            return;
+          } catch (error) {
+            lastErrorMessage = error.message || String(error);
+            nextPending.push(originalIndex);
+            return;
+          }
+        }
+
+        let message = '';
+        try {
+          const body = JSON.parse(response.getContentText() || '{}');
+          message = body.error?.message || '';
+        } catch (error) {}
+        lastErrorMessage = message || `Gemini ${model} gagal (HTTP ${code}).`;
+
+        // Cuba model/key seterusnya untuk ralat sementara, quota, model tidak tersedia,
+        // atau respons API lain. Ini mengelakkan satu model sibuk menggagalkan seluruh minggu.
+        nextPending.push(originalIndex);
+      });
+
+      pending = nextPending;
+      if (pending.length) Utilities.sleep(350);
+    }
+    if (!pending.length) break;
+  }
+
+  // Jika Gemini masih gagal dan OpenRouter sudah dikonfigurasi, gunakan sebagai sandaran terakhir.
+  if (pending.length && properties.getProperty('OPENROUTER_API_KEY')) {
+    try {
+      const openRouterResults = callOpenRouterBatch_(pending.map(index => prompts[index]));
+      pending.forEach((originalIndex, i) => { results[originalIndex] = openRouterResults[i]; });
+      pending = [];
+    } catch (error) {
+      lastErrorMessage = error.message || lastErrorMessage;
     }
   }
 
-  return responses.map(parseGeminiResponse_);
+  if (pending.length) {
+    throw new Error(
+      'Semua model AI sedang sibuk atau tidak tersedia. Sistem telah mencuba beberapa model sandaran. ' +
+      (lastErrorMessage ? `Ralat terakhir: ${lastErrorMessage}` : 'Sila cuba semula sebentar lagi.')
+    );
+  }
+
+  return results;
 }
 
 function parseGeminiResponse_(response) {
