@@ -1,11 +1,18 @@
 const ERPH = Object.freeze({
   DAYS: ['ISNIN', 'SELASA', 'RABU', 'KHAMIS', 'JUMAAT'],
   DAY_BY_INDEX: ['Ahad', 'Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu'],
+  DAY_JAWI_BY_INDEX: ['احد', 'اثنين', 'سلاسا', 'رابو', 'خميس', 'جمعة', 'سبت'],
+  JAWI_SPREADSHEET_ID: '1-8C86p6AoTPkeJTx-PfLjV8erNQtnCLaFyaEBrNvmPo',
   SUBJECTS: {
     PAI: 'Pendidikan Agama Islam (PAI)',
     KKQ: 'Kelas Kemahiran al-Quran (KKQ)'
   },
+  SUBJECTS_JAWI: {
+    PAI: 'ڤنديديقن اسلام (PAI)',
+    KKQ: 'کلس کماهيرن القرآن (KKQ)'
+  },
   STUDENT_CENTRED_STRATEGY: 'Pembelajaran Berpusatkan Murid dan Kolaboratif',
+  STUDENT_CENTRED_STRATEGY_JAWI: 'ڤمبلاجرن برڤوستکن موريد دان کولابوراتيف',
   ASSESSMENT_ROWS: {
     'Amali / Eksperimen': 53,
     Projek: 54,
@@ -298,14 +305,21 @@ function fillMissingStudentCentredStrategies() {
   SpreadsheetApp.getUi().alert(`Selesai: ${updated} slot kosong telah diisi dengan strategi pembelajaran berpusatkan murid dan kolaboratif.${note}`);
 }
 
-function getWorkbook_() {
-  const spreadsheetId = PropertiesService.getScriptProperties().getProperty('ERPH_SPREADSHEET_ID');
+function getWorkbook_(outputScript) {
+  const mode = normaliseOutputScript_(outputScript);
+  const properties = PropertiesService.getScriptProperties();
+  if (mode === 'jawi') {
+    const jawiId = properties.getProperty('ERPH_JAWI_SPREADSHEET_ID') || ERPH.JAWI_SPREADSHEET_ID;
+    if (!jawiId) throw new Error('Fail eRPH Jawi belum disambungkan.');
+    return SpreadsheetApp.openById(jawiId);
+  }
+  const spreadsheetId = properties.getProperty('ERPH_SPREADSHEET_ID');
   if (spreadsheetId) return SpreadsheetApp.openById(spreadsheetId);
   return SpreadsheetApp.getActive();
 }
 
-function getWorksheet_(expectedName) {
-  const workbook = getWorkbook_();
+function getWorksheet_(expectedName, workbook) {
+  workbook = workbook || getWorkbook_('rumi');
   const exact = workbook.getSheetByName(expectedName);
   if (exact) return exact;
   const normalise = name => String(name).toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -319,7 +333,7 @@ function getSlotsFromSheet_(sheet) {
   const formulas = sheet.getRange(1, 4, lastRow, 1).getFormulas().flat();
   const starts = labels
     .map((label, index) => ({ label: label.trim().toUpperCase(), row: index + 1 }))
-    .filter(item => item.label === 'TARIKH' && formulas[item.row - 1]);
+    .filter(item => ['TARIKH', 'تاريخ'].includes(item.label) && formulas[item.row - 1]);
   if (!starts.length) throw new Error(`Tiada slot eRPH ditemui dalam tab ${sheet.getName()}.`);
   return starts.map((item, index) => ({ value: item.row, label: `Slot ${index + 1} — rekod kelas ${index + 1}` }));
 }
@@ -329,16 +343,18 @@ function generateAllActiveSlots() {
   const sheet = ss.getActiveSheet();
   if (!ERPH.DAYS.includes(sheet.getName())) throw new Error('Buka salah satu tab ISNIN hingga JUMAAT dahulu.');
   const date = coerceSheetDate_(sheet.getRange('D11').getValue());
-  const expectedSheet = getTargetSheet_(Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'));
-  if (expectedSheet.getName() !== sheet.getName()) {
+  const expectedSheetName = ERPH.DAY_BY_INDEX[date.getDay()].toUpperCase();
+  if (expectedSheetName !== sheet.getName()) {
     throw new Error(`Tarikh di D11 ialah ${Utilities.formatDate(date, Session.getScriptTimeZone(), 'dd/MM/yyyy')}, tetapi tab aktif ialah ${sheet.getName()}. Sila betulkan tarikh dahulu.`);
   }
+  const outputScript = detectOutputScript_(sheet);
   const week = Number(sheet.getRange('D7').getValue());
   if (!week) throw new Error('Masukkan nombor minggu pada sel D7 dahulu.');
 
   const jobs = getSlotsFromSheet_(sheet).map(slot => buildAutoJob_(sheet, Number(slot.value), week, date));
-  const results = callGeminiBatch_(jobs.map(job => buildPrompt_(job.form, job.curriculum)));
-  jobs.forEach((job, index) => writeErph_(sheet, job.slotStartRow, job.form, job.curriculum, results[index]));
+  const results = callGeminiBatch_(jobs.map(job => buildPrompt_(job.form, job.curriculum, outputScript)));
+  results.forEach(result => validateGeneratedOutput_(result, outputScript));
+  jobs.forEach((job, index) => writeErph_(sheet, job.slotStartRow, job.form, job.curriculum, results[index], outputScript));
   SpreadsheetApp.flush();
   SpreadsheetApp.getUi().alert(`Selesai: ${jobs.length} slot pada tab ${sheet.getName()} telah dijana.`);
 }
@@ -348,16 +364,18 @@ function generateWeekFromPwa_(payload) {
   if (!Number.isInteger(week) || week < 1 || week > 45) throw new Error('Minggu mestilah antara 1 hingga 45.');
   const monday = parseIsoDate_(payload.monday);
   if (monday.getDay() !== 1) throw new Error('Tarikh yang dipilih mestilah hari Isnin.');
+  const outputScript = normaliseOutputScript_(payload.outputScript);
+  const outputWorkbook = getWorkbook_(outputScript);
   const selectedDays = payload.days || {};
   const dayJobs = [];
 
   ERPH.DAYS.forEach((sheetName, offset) => {
     if (!selectedDays[sheetName]) return;
     const date = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + offset, 12, 0, 0);
-    const sheet = getWorksheet_(sheetName);
-    if (!sheet) throw new Error(`Tab ${sheetName} tidak ditemui dalam fail eRPH yang disambungkan.`);
+    const sheet = getWorksheet_(sheetName, outputWorkbook);
+    if (!sheet) throw new Error(`Tab ${sheetName} tidak ditemui dalam fail eRPH ${outputScript === 'jawi' ? 'Jawi' : 'Rumi'}.`);
     sheet.getRange('D7').setValue(week);
-    sheet.getRange('D9').setValue(ERPH.DAY_BY_INDEX[date.getDay()]);
+    sheet.getRange('D9').setValue(outputDay_(date.getDay(), outputScript));
     sheet.getRange('D11').setValue(date);
     getSlotsFromSheet_(sheet).forEach(slot => {
       const job = buildAutoJob_(sheet, Number(slot.value), week, date);
@@ -366,15 +384,25 @@ function generateWeekFromPwa_(payload) {
   });
   if (!dayJobs.length) throw new Error('Tandakan sekurang-kurangnya satu hari untuk dijana.');
 
-  const results = callGeminiBatch_(dayJobs.map(job => buildPrompt_(job.form, job.curriculum)));
-  dayJobs.forEach((job, index) => writeErph_(job.sheet, job.slotStartRow, job.form, job.curriculum, results[index]));
+  const results = callGeminiBatch_(dayJobs.map(job => buildPrompt_(job.form, job.curriculum, outputScript)));
+  results.forEach(result => validateGeneratedOutput_(result, outputScript));
+  dayJobs.forEach((job, index) => writeErph_(job.sheet, job.slotStartRow, job.form, job.curriculum, results[index], outputScript));
   SpreadsheetApp.flush();
   const summary = ERPH.DAYS.reduce((all, day) => {
     const count = dayJobs.filter(job => job.sheetName === day).length;
     if (count) all[day] = count;
     return all;
   }, {});
-  return { ok: true, week, monday: payload.monday, generatedSlots: dayJobs.length, summary };
+  return {
+    ok: true,
+    week,
+    monday: payload.monday,
+    outputScript,
+    outputLabel: outputScript === 'jawi' ? 'Jawi' : 'Rumi',
+    generatedSlots: dayJobs.length,
+    summary,
+    workbookUrl: outputWorkbook.getUrl()
+  };
 }
 
 function prepareClassroomFromPwa_(payload) {
@@ -382,12 +410,15 @@ function prepareClassroomFromPwa_(payload) {
   if (!Number.isInteger(week) || week < 1 || week > 45) throw new Error('Minggu mestilah antara 1 hingga 45.');
   const monday = parseIsoDate_(payload.monday);
   if (monday.getDay() !== 1) throw new Error('Tarikh yang dipilih mestilah hari Isnin.');
+  const outputScript = normaliseOutputScript_(payload.outputScript);
 
-  const workbook = getWorkbook_();
+  const workbook = getWorkbook_(outputScript);
   const mondayLabel = Utilities.formatDate(monday, Session.getScriptTimeZone(), 'dd-MM-yyyy');
-  const fileName = `eRPH Minggu ${week} (${mondayLabel})`;
+  const fileName = outputScript === 'jawi'
+    ? `eRPH Jawi Minggu ${week} (${mondayLabel})`
+    : `eRPH Minggu ${week} (${mondayLabel})`;
   const copy = DriveApp.getFileById(workbook.getId()).makeCopy(fileName);
-  return { ok: true, fileName: copy.getName(), fileUrl: copy.getUrl() };
+  return { ok: true, outputScript, fileName: copy.getName(), fileUrl: copy.getUrl() };
 }
 
 function buildAutoJob_(sheet, slotStartRow, week, date) {
@@ -412,8 +443,8 @@ function buildAutoJob_(sheet, slotStartRow, week, date) {
 
 function canonicalSubject_(value) {
   const subject = String(value).trim();
-  if ([ERPH.SUBJECTS.PAI, 'Pendidikan Islam'].includes(subject)) return ERPH.SUBJECTS.PAI;
-  if ([ERPH.SUBJECTS.KKQ, 'KKQ'].includes(subject)) return ERPH.SUBJECTS.KKQ;
+  if ([ERPH.SUBJECTS.PAI, 'Pendidikan Islam', ERPH.SUBJECTS_JAWI.PAI, 'ڤنديديقن اسلام'].includes(subject)) return ERPH.SUBJECTS.PAI;
+  if ([ERPH.SUBJECTS.KKQ, 'KKQ', ERPH.SUBJECTS_JAWI.KKQ, 'کلس کماهيرن القرآن'].includes(subject)) return ERPH.SUBJECTS.KKQ;
   return '';
 }
 
@@ -433,6 +464,7 @@ function findCurriculumByExistingTitle_(subject, form, existingTitle) {
   if (!existingTitle) return null;
   const normalise = text => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '');
   const target = normalise(existingTitle);
+  if (!target) return null;
   return getCurriculumOptions(subject, form).options.find(item =>
     [item.title, item.alias].some(value => normalise(value) === target)
   ) || null;
@@ -472,8 +504,19 @@ function getTargetSheet_(dateText) {
   return sheet;
 }
 
-function buildPrompt_(form, c) {
+function buildPrompt_(form, c, outputScript) {
+  const mode = normaliseOutputScript_(outputScript);
+  const outputInstruction = mode === 'jawi'
+    ? `OUTPUT JAWI — WAJIB
+Semua nilai teks yang anda jana hendaklah dalam tulisan Jawi Bahasa Melayu Malaysia berdasarkan Pedoman Ejaan Jawi Yang Disempurnakan.
+Jangan terjemah maksud kurikulum. Untuk medan theme, title, standardContent dan standardLearning, transliterasi kandungan sumber yang diberi dengan setepat mungkin tanpa menambah atau membuang fakta.
+Kekalkan nombor, kod standard, PAI, KKQ, DSKP, KSSM, PBD, PA21, KBAT, KBKK, EMK, i-THINK dan nama aktiviti antarabangsa jika perlu.
+PENTING: medan assessmentTypes ialah kod sistem. Nilainya MESTI kekal dalam Rumi dan hanya boleh menggunakan: "Amali / Eksperimen", "Projek", "Pembentangan", "Ujian", "Peperiksaan", "Latihan / Kerja Rumah", "Lembaran Kerja", "Pemerhatian", "Kuiz", "Lisan", "Tugasan".`
+    : 'OUTPUT RUMI — Gunakan Bahasa Melayu Rumi yang kemas dan standard.';
+
   return `Anda ialah guru Pendidikan Islam KSSM Malaysia. Hasilkan eRPH Bahasa Melayu yang praktikal, tepat dan selaras dengan DSKP/sukatan yang diberi. Jangan cipta Standard Kandungan atau Standard Pembelajaran baharu. Gunakan 3 item ringkas bagi objektif, kriteria kejayaan dan setiap fasa aktiviti. Aktiviti mestilah sesuai untuk tempoh masa ${form.startTime} hingga ${form.endTime}, berpusatkan murid, beradab dan boleh dilaksanakan.
+
+${outputInstruction}
 
 MAKLUMAT KELAS
 Minggu: ${form.week}
@@ -586,29 +629,35 @@ function extractJson_(text) {
   return cleaned.slice(start, end + 1);
 }
 
-function writeErph_(sheet, slotStartRow, form, c, g) {
+function writeErph_(sheet, slotStartRow, form, c, g, outputScript) {
+  const mode = normaliseOutputScript_(outputScript);
+  const isJawi = mode === 'jawi';
   const date = parseIsoDate_(form.date);
-  const day = ERPH.DAY_BY_INDEX[date.getDay()];
+  const day = outputDay_(date.getDay(), mode);
+  const subject = outputSubject_(form.subject, mode);
   const put = (cell, value) => sheet.getRange(cell).setValue(value || '');
   const putSlot = (rowOffset, column, value) => sheet.getRange(slotStartRow + rowOffset, column).setValue(value || '');
   const putSlotList = (rowOffsets, values) => rowOffsets.forEach((offset, i) => putSlot(offset, 4, (values || [])[i] || ''));
 
   // Identiti dan jadual — hanya tab hari yang sepadan dengan tarikh akan disentuh.
   put('D7', Number(form.week)); put('D9', day); put('D11', date);
-  putSlot(1, 5, form.startTime); putSlot(1, 9, form.endTime); putSlot(2, 4, Number(form.form)); putSlot(2, 5, form.className); putSlot(3, 4, form.subject);
+  putSlot(1, 5, form.startTime); putSlot(1, 9, form.endTime); putSlot(2, 4, Number(form.form)); putSlot(2, 5, form.className); putSlot(3, 4, subject);
 
-  // DSKP/Sukatan: data asal dikunci daripada pilihan kurikulum, bukan direka Gemini.
-  putSlot(4, 4, c.field); putSlot(5, 4, c.title); putSlot(6, 4, g.skill);
-  putSlot(7, 4, c.standardContent); putSlot(8, 4, c.standardLearning);
+  // DSKP/Sukatan kekal sebagai sumber Rumi. Dalam mod Jawi, AI hanya mentransliterasi paparan.
+  putSlot(4, 4, isJawi ? (g.theme || c.field) : c.field);
+  putSlot(5, 4, isJawi ? (g.title || c.title) : c.title);
+  putSlot(6, 4, g.skill);
+  putSlot(7, 4, isJawi ? (g.standardContent || c.standardContent) : c.standardContent);
+  putSlot(8, 4, isJawi ? (g.standardLearning || c.standardLearning) : c.standardLearning);
   putSlotList([11, 12, 13], g.objectives); putSlotList([14, 15, 16], g.successCriteria);
   putSlotList([18, 19, 20], g.starter); putSlotList([22, 23, 24], g.activity);
   putSlotList([26, 27, 28], g.explanation); putSlotList([30, 31, 32], g.closure); putSlotList([34, 35, 36], g.assessmentDetails);
   putSlot(37, 4, g.references || c.source); putSlot(42, 4, g.reflection); putSlot(47, 4, g.followUp);
 
   // Lajur sokongan sebelah kanan template.
-  // M(slot+1) ialah label, manakala M(slot+2) ialah nilai strategi sebenar.
-  // Strategi dipilih oleh AI ikut tajuk; fallback generik hanya jika medan kosong.
-  putSlot(1, 13, 'STRATEGI P&P'); putSlot(2, 13, String(g.strategy || '').trim() || ERPH.STUDENT_CENTRED_STRATEGY); putSlot(5, 13, g.method); putSlot(8, 13, g.teachingAids); putSlot(11, 13, g.pa21);
+  putSlot(1, 13, isJawi ? 'ستراتيݢي ڤڠاجرن دان ڤمبلاجرن' : 'STRATEGI P&P');
+  putSlot(2, 13, String(g.strategy || '').trim() || (isJawi ? ERPH.STUDENT_CENTRED_STRATEGY_JAWI : ERPH.STUDENT_CENTRED_STRATEGY));
+  putSlot(5, 13, g.method); putSlot(8, 13, g.teachingAids); putSlot(11, 13, g.pa21);
   putSlot(15, 13, g.kbkk); putSlot(17, 13, g.iThink); putSlot(20, 13, g.values); putSlot(23, 13, g.thinkingSkill);
   putSlot(26, 13, g.multipleIntelligences); putSlot(31, 13, g.kbatCurriculum); putSlot(33, 13, g.kbatCoCurriculum); putSlot(36, 13, g.emk);
 
@@ -617,6 +666,41 @@ function writeErph_(sheet, slotStartRow, form, c, g) {
     const row = ERPH.ASSESSMENT_ROWS[type];
     if (row) sheet.getRange(slotStartRow + row - 14, 16).setValue(true);
   });
+}
+
+function normaliseOutputScript_(value) {
+  return String(value || 'rumi').toLowerCase() === 'jawi' ? 'jawi' : 'rumi';
+}
+
+function detectOutputScript_(sheet) {
+  const marker = String(sheet.getRange('B7').getDisplayValue()).trim();
+  return marker === 'ميڠݢو' ? 'jawi' : 'rumi';
+}
+
+function outputDay_(dayIndex, outputScript) {
+  return normaliseOutputScript_(outputScript) === 'jawi'
+    ? ERPH.DAY_JAWI_BY_INDEX[dayIndex]
+    : ERPH.DAY_BY_INDEX[dayIndex];
+}
+
+function outputSubject_(subject, outputScript) {
+  if (normaliseOutputScript_(outputScript) !== 'jawi') return subject;
+  if (subject === ERPH.SUBJECTS.PAI) return ERPH.SUBJECTS_JAWI.PAI;
+  if (subject === ERPH.SUBJECTS.KKQ) return ERPH.SUBJECTS_JAWI.KKQ;
+  return subject;
+}
+
+function validateGeneratedOutput_(generated, outputScript) {
+  if (normaliseOutputScript_(outputScript) !== 'jawi') return;
+  const sample = [
+    generated.theme, generated.title, generated.skill,
+    generated.standardContent, generated.standardLearning,
+    ...(generated.objectives || []), ...(generated.activity || []),
+    generated.reflection, generated.followUp, generated.strategy
+  ].filter(Boolean).join(' ');
+  if (!/[\u0600-\u06FF]/.test(sample)) {
+    throw new Error('AI tidak menghasilkan tulisan Jawi. Tiada perubahan ditulis; sila jana semula.');
+  }
 }
 
 function parseIsoDate_(value) {
