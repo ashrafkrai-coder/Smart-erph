@@ -4,10 +4,10 @@ export default async function handler(request, response) {
     return response.status(405).json({ ok: false, error: 'Method tidak dibenarkan.' });
   }
 
-  const scriptUrl = process.env.ERPH_SCRIPT_URL;
+  const scriptUrl = 'https://script.google.com/macros/s/AKfycbwETc0c_T1_Q-7TKkej_45i7Bt0vGb4eOoJ49XyUrHujjNjSTbF4RItCTZGa1fQw3Ek/exec';
   const apiToken = process.env.ERPH_API_TOKEN;
-  if (!scriptUrl || !apiToken) {
-    return response.status(500).json({ ok: false, error: 'Tetapan sambungan eRPH belum lengkap di Vercel.' });
+  if (!apiToken) {
+    return response.status(500).json({ ok: false, error: 'ERPH_API_TOKEN belum ditetapkan di Vercel.' });
   }
 
   try {
