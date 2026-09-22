@@ -2,15 +2,20 @@ const ERPH = Object.freeze({
   DAYS: ['ISNIN', 'SELASA', 'RABU', 'KHAMIS', 'JUMAAT'],
   DAY_BY_INDEX: ['Ahad', 'Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu'],
   DAY_JAWI_BY_INDEX: ['احد', 'اثنين', 'سلاسا', 'رابو', 'خميس', 'جمعة', 'سبت'],
-  JAWI_SPREADSHEET_ID: '1-8C86p6AoTPkeJTx-PfLjV8erNQtnCLaFyaEBrNvmPo',
+  DEFAULT_OUTPUT_SCRIPT: 'jawi',
   SUBJECTS: {
     PAI: 'Pendidikan Agama Islam (PAI)',
     KKQ: 'Kelas Kemahiran al-Quran (KKQ)'
   },
   SUBJECTS_JAWI: {
-    PAI: 'ڤنديديقن اسلام (PAI)',
-    KKQ: 'کلس کماهيرن القرآن (KKQ)'
+    PAI: 'ڤنديديقن اݢام إسلام (ڤاي)',
+    KKQ: 'کلس کماهيرن القرءان (ککق)'
   },
+  SUBJECT_ALIASES_JAWI: {
+    PAI: ['ڤنديديقن اݢام إسلام (ڤاي)', 'ڤنديديقن اݢام إسلام', 'ڤنديديقن إسلام', 'ڤنديديقن اسلام'],
+    KKQ: ['کلس کماهيرن القرءان (ککق)', 'کلس کماهيرن القرءان', 'کلس کماهيرن القرآن (KKQ)', 'کلس کماهيرن القرآن']
+  },
+  ACTIVE_STATUS_ALIASES: ['AKTIF', 'اکتيف'],
   STUDENT_CENTRED_STRATEGY: 'Pembelajaran Berpusatkan Murid dan Kolaboratif',
   STUDENT_CENTRED_STRATEGY_JAWI: 'ڤمبلاجرن برڤوستکن موريد دان کولابوراتيف',
   ASSESSMENT_ROWS: {
@@ -46,17 +51,20 @@ function doPost(e) {
 }
 
 function onOpen() {
+  const ss = SpreadsheetApp.getActive();
+  if (ss) {
+    // Simpan ID fail Jawi secara automatik setiap kali fail dibuka.
+    PropertiesService.getScriptProperties().setProperty('ERPH_JAWI_SPREADSHEET_ID', ss.getId());
+  }
+
   SpreadsheetApp.getUi()
-    .createMenu('Smart eRPH AI')
-    .addItem('Jana semua slot tab aktif', 'generateAllActiveSlots')
+    .createMenu('Smart eRPH AI — Jawi')
+    .addItem('Jana semua slot tab aktif (Jawi)', 'generateAllActiveSlots')
     .addItem('Baiki strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
     .addSeparator()
-    .addItem('Cipta salinan Jawi seluruh fail', 'createJawiWorkbookCopy')
-    .addSeparator()
     .addItem('Tetapkan API Gemini', 'setGeminiApiKey')
-    .addItem('Tetapkan API OpenRouter', 'setOpenRouterApiKey')
-    .addItem('Pilih AI Provider (Gemini/OpenRouter)', 'setAiProvider')
-    .addItem('Sambungkan fail eRPH semasa untuk PWA', 'setErphSpreadsheet')
+    .addItem('Uji sambungan Gemini', 'testGeminiApi')
+    .addItem('Sambungkan fail Jawi ini untuk PWA', 'setErphSpreadsheet')
     .addToUi();
 }
 
@@ -225,59 +233,55 @@ function setGeminiApiKey() {
   const ui = SpreadsheetApp.getUi();
   const answer = ui.prompt(
     'Tetapkan API Gemini',
-    'Tampalkan API key daripada Google AI Studio. Ia disimpan dalam Script Properties projek ini.',
+    'Tampalkan API key daripada projek Google AI Studio yang menggunakan Tier 1. Key disimpan dalam Script Properties projek ini.',
     ui.ButtonSet.OK_CANCEL
   );
   if (answer.getSelectedButton() !== ui.Button.OK) return;
+
   const apiKey = answer.getResponseText().trim();
   if (!apiKey) {
     ui.alert('API key tidak dimasukkan.');
     return;
   }
-  PropertiesService.getScriptProperties().setProperty('GEMINI_API_KEY', apiKey);
-  ui.alert('API Gemini telah disimpan. Anda kini boleh membuka Smart eRPH AI.');
-}
 
-function setOpenRouterApiKey() {
-  const ui = SpreadsheetApp.getUi();
-  const answer = ui.prompt(
-    'Tetapkan API OpenRouter',
-    'Tampalkan API key daripada openrouter.ai/keys. Ia disimpan dalam Script Properties projek ini.',
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (answer.getSelectedButton() !== ui.Button.OK) return;
-  const apiKey = answer.getResponseText().trim();
-  if (!apiKey) {
-    ui.alert('API key tidak dimasukkan.');
-    return;
-  }
-  PropertiesService.getScriptProperties().setProperty('OPENROUTER_API_KEY', apiKey);
-  ui.alert('API OpenRouter telah disimpan.');
-}
-
-function setAiProvider() {
-  const ui = SpreadsheetApp.getUi();
   const properties = PropertiesService.getScriptProperties();
-  const current = properties.getProperty('AI_PROVIDER') || 'gemini';
-  const answer = ui.prompt(
-    'Pilih AI Provider',
-    `Taip "gemini" atau "openrouter". (Semasa: ${current})`,
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (answer.getSelectedButton() !== ui.Button.OK) return;
-  const provider = answer.getResponseText().trim().toLowerCase();
-  if (!['gemini', 'openrouter'].includes(provider)) {
-    ui.alert('Nilai tidak sah. Taip "gemini" atau "openrouter".');
-    return;
+  properties.setProperty('GEMINI_API_KEY', apiKey);
+
+  // Bersihkan tetapan provider lama supaya projek ini menggunakan Gemini sahaja.
+  properties.deleteProperty('GEMINI_API_KEY_BACKUP');
+  properties.deleteProperty('OPENROUTER_API_KEY');
+  properties.deleteProperty('OPENROUTER_MODEL');
+  properties.deleteProperty('AI_PROVIDER');
+
+  ui.alert('API Gemini Tier 1 telah disimpan. Smart eRPH kini menggunakan Gemini sahaja.');
+}
+
+function testGeminiApi() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const result = callGeminiBatch_([
+      'Pulangkan JSON sahaja: {"status":"ok","mesej":"Gemini aktif"}'
+    ])[0];
+    ui.alert(
+      'Sambungan Gemini berjaya',
+      'Model Gemini boleh dicapai menggunakan GEMINI_API_KEY semasa.\n\n' +
+      JSON.stringify(result),
+      ui.ButtonSet.OK
+    );
+  } catch (error) {
+    ui.alert(
+      'Sambungan Gemini gagal',
+      error.message || String(error),
+      ui.ButtonSet.OK
+    );
   }
-  properties.setProperty('AI_PROVIDER', provider);
-  ui.alert(`AI Provider ditetapkan kepada: ${provider}`);
 }
 
 function setErphSpreadsheet() {
   const ss = SpreadsheetApp.getActive();
-  PropertiesService.getScriptProperties().setProperty('ERPH_SPREADSHEET_ID', ss.getId());
-  SpreadsheetApp.getUi().alert('Fail eRPH ini telah disambungkan kepada PWA.');
+  if (!ss) throw new Error('Buka fail eRPH Jawi terlebih dahulu.');
+  PropertiesService.getScriptProperties().setProperty('ERPH_JAWI_SPREADSHEET_ID', ss.getId());
+  SpreadsheetApp.getUi().alert('Fail eRPH Jawi ini telah disambungkan kepada PWA.');
 }
 
 // Pembetulan sekali jalan untuk rekod lama. Dalam template, M(slot+1) ialah label
@@ -293,10 +297,10 @@ function fillMissingStudentCentredStrategies() {
     }
     getSlotsFromSheet_(sheet).forEach(slot => {
       const slotStartRow = Number(slot.value);
-      sheet.getRange(slotStartRow + 1, 13).setValue('STRATEGI P&P');
+      sheet.getRange(slotStartRow + 1, 13).setValue('ستراتيݢي ڤڠاجرن دان ڤمبلاجرن');
       const strategyCell = sheet.getRange(slotStartRow + 2, 13);
       if (!String(strategyCell.getDisplayValue()).trim()) {
-        strategyCell.setValue(ERPH.STUDENT_CENTRED_STRATEGY);
+        strategyCell.setValue(ERPH.STUDENT_CENTRED_STRATEGY_JAWI);
         updated++;
       }
     });
@@ -305,21 +309,20 @@ function fillMissingStudentCentredStrategies() {
   SpreadsheetApp.getUi().alert(`Selesai: ${updated} slot kosong telah diisi dengan strategi pembelajaran berpusatkan murid dan kolaboratif.${note}`);
 }
 
-function getWorkbook_(outputScript) {
-  const mode = normaliseOutputScript_(outputScript);
+function getWorkbook_() {
   const properties = PropertiesService.getScriptProperties();
-  if (mode === 'jawi') {
-    const jawiId = properties.getProperty('ERPH_JAWI_SPREADSHEET_ID') || ERPH.JAWI_SPREADSHEET_ID;
-    if (!jawiId) throw new Error('Fail eRPH Jawi belum disambungkan.');
-    return SpreadsheetApp.openById(jawiId);
-  }
-  const spreadsheetId = properties.getProperty('ERPH_SPREADSHEET_ID');
-  if (spreadsheetId) return SpreadsheetApp.openById(spreadsheetId);
-  return SpreadsheetApp.getActive();
+  const jawiId = properties.getProperty('ERPH_JAWI_SPREADSHEET_ID');
+  if (jawiId) return SpreadsheetApp.openById(jawiId);
+
+  // Fallback hanya ketika kod dijalankan dari fail Jawi yang terikat.
+  const active = SpreadsheetApp.getActive();
+  if (active) return active;
+
+  throw new Error('Fail eRPH Jawi belum disambungkan. Buka Sheet Jawi dan pilih Smart eRPH AI — Jawi > Sambungkan fail Jawi ini untuk PWA.');
 }
 
 function getWorksheet_(expectedName, workbook) {
-  workbook = workbook || getWorkbook_('rumi');
+  workbook = workbook || getWorkbook_();
   const exact = workbook.getSheetByName(expectedName);
   if (exact) return exact;
   const normalise = name => String(name).toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -347,7 +350,7 @@ function generateAllActiveSlots() {
   if (expectedSheetName !== sheet.getName()) {
     throw new Error(`Tarikh di D11 ialah ${Utilities.formatDate(date, Session.getScriptTimeZone(), 'dd/MM/yyyy')}, tetapi tab aktif ialah ${sheet.getName()}. Sila betulkan tarikh dahulu.`);
   }
-  const outputScript = detectOutputScript_(sheet);
+  const outputScript = 'jawi';
   const week = Number(sheet.getRange('D7').getValue());
   if (!week) throw new Error('Masukkan nombor minggu pada sel D7 dahulu.');
 
@@ -364,7 +367,7 @@ function generateWeekFromPwa_(payload) {
   if (!Number.isInteger(week) || week < 1 || week > 45) throw new Error('Minggu mestilah antara 1 hingga 45.');
   const monday = parseIsoDate_(payload.monday);
   if (monday.getDay() !== 1) throw new Error('Tarikh yang dipilih mestilah hari Isnin.');
-  const outputScript = normaliseOutputScript_(payload.outputScript);
+  const outputScript = 'jawi';
   const outputWorkbook = getWorkbook_(outputScript);
   const selectedDays = payload.days || {};
   const dayJobs = [];
@@ -410,7 +413,7 @@ function prepareClassroomFromPwa_(payload) {
   if (!Number.isInteger(week) || week < 1 || week > 45) throw new Error('Minggu mestilah antara 1 hingga 45.');
   const monday = parseIsoDate_(payload.monday);
   if (monday.getDay() !== 1) throw new Error('Tarikh yang dipilih mestilah hari Isnin.');
-  const outputScript = normaliseOutputScript_(payload.outputScript);
+  const outputScript = 'jawi';
 
   const workbook = getWorkbook_(outputScript);
   const mondayLabel = Utilities.formatDate(monday, Session.getScriptTimeZone(), 'dd-MM-yyyy');
@@ -442,9 +445,21 @@ function buildAutoJob_(sheet, slotStartRow, week, date) {
 }
 
 function canonicalSubject_(value) {
-  const subject = String(value).trim();
-  if ([ERPH.SUBJECTS.PAI, 'Pendidikan Islam', ERPH.SUBJECTS_JAWI.PAI, 'ڤنديديقن اسلام'].includes(subject)) return ERPH.SUBJECTS.PAI;
-  if ([ERPH.SUBJECTS.KKQ, 'KKQ', ERPH.SUBJECTS_JAWI.KKQ, 'کلس کماهيرن القرآن'].includes(subject)) return ERPH.SUBJECTS.KKQ;
+  const subject = String(value || '').trim();
+  const key = normaliseForMatch_(subject);
+
+  const paiAliases = [
+    ERPH.SUBJECTS.PAI, 'Pendidikan Islam', 'Pendidikan Agama Islam', 'PAI',
+    ERPH.SUBJECTS_JAWI.PAI, ...ERPH.SUBJECT_ALIASES_JAWI.PAI
+  ].map(normaliseForMatch_);
+
+  const kkqAliases = [
+    ERPH.SUBJECTS.KKQ, 'Kelas Kemahiran al-Quran', 'KKQ',
+    ERPH.SUBJECTS_JAWI.KKQ, ...ERPH.SUBJECT_ALIASES_JAWI.KKQ
+  ].map(normaliseForMatch_);
+
+  if (paiAliases.includes(key)) return ERPH.SUBJECTS.PAI;
+  if (kkqAliases.includes(key)) return ERPH.SUBJECTS.KKQ;
   return '';
 }
 
@@ -462,12 +477,19 @@ function findCurriculumByWeek_(subject, form, week) {
 
 function findCurriculumByExistingTitle_(subject, form, existingTitle) {
   if (!existingTitle) return null;
-  const normalise = text => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const target = normalise(existingTitle);
+  const target = normaliseForMatch_(existingTitle);
   if (!target) return null;
   return getCurriculumOptions(subject, form).options.find(item =>
-    [item.title, item.alias].some(value => normalise(value) === target)
+    [item.title, item.alias].some(value => normaliseForMatch_(value) === target)
   ) || null;
+}
+
+function normaliseForMatch_(text) {
+  return String(text || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\u064B-\u065F\u0670\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[^a-z0-9\u0600-\u06FF]+/g, '');
 }
 
 function getCurriculumOptions(subject, form) {
@@ -477,7 +499,10 @@ function getCurriculumOptions(subject, form) {
 
   const values = sheet.getDataRange().getDisplayValues();
   const headers = values.shift();
-  const rows = values.filter(row => row[0] && row[13].toUpperCase() === 'AKTIF');
+  const activeKeys = ERPH.ACTIVE_STATUS_ALIASES.map(normaliseForMatch_);
+  const rows = values.filter(row =>
+    row[0] && activeKeys.includes(normaliseForMatch_(row[13]))
+  );
   return {
     sourceName,
     headers,
@@ -548,152 +573,139 @@ PULANGKAN JSON SAHAJA, tanpa markdown, dengan skema tepat ini:
 }
 
 function callGeminiBatch_(prompts) {
-  const provider = (PropertiesService.getScriptProperties().getProperty('AI_PROVIDER') || 'gemini').toLowerCase();
-  if (provider === 'openrouter') return callOpenRouterBatch_(prompts);
-  if (provider !== 'gemini') throw new Error(`AI_PROVIDER tidak sah: "${provider}". Guna "gemini" atau "openrouter".`);
+  // Versi ini menggunakan Gemini sahaja.
   return callGeminiApiBatch_(prompts);
 }
 
 function callGeminiApiBatch_(prompts) {
   const properties = PropertiesService.getScriptProperties();
-  const primaryKey = properties.getProperty('GEMINI_API_KEY');
-  const backupKey = properties.getProperty('GEMINI_API_KEY_BACKUP');
-  if (!primaryKey) throw new Error('GEMINI_API_KEY belum disetkan dalam Script Properties.');
+  const apiKey = properties.getProperty('GEMINI_API_KEY');
+  const model = properties.getProperty('GEMINI_MODEL') || 'gemini-3.6-flash';
 
-  // Model utama boleh ditukar melalui Script Property GEMINI_MODEL tanpa ubah kod.
-  // Jika model sibuk / rate-limited, sistem akan cuba model stabil lain secara automatik.
-  const preferredModel = properties.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash';
-  const fallbackModels = [
-    preferredModel,
-    'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-3.5-flash-lite',
-    'gemini-2.5-flash'
-  ].filter((model, index, all) => all.indexOf(model) === index);
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY belum disetkan dalam Script Properties.');
+  }
 
-  const keys = [primaryKey, backupKey].filter(Boolean);
+  // Elakkan lonjakan permintaan apabila satu minggu mempunyai banyak slot.
+  // Maksimum 4 request serentak, kemudian jeda sebelum kelompok seterusnya.
+  const MAX_PARALLEL = 4;
+  const GROUP_PAUSE_MS = 1200;
+  const MAX_RETRIES = 2;
   const results = new Array(prompts.length);
-  let pending = prompts.map((_, index) => index);
-  let lastErrorMessage = '';
 
-  const buildRequest_ = (prompt, key, model) => ({
-    url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`,
+  const buildRequest_ = prompt => ({
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json' }
+      generationConfig: {
+        responseMimeType: 'application/json',
+        temperature: 0.35
+      }
     }),
     muteHttpExceptions: true
   });
 
-  // Cuba setiap model. Untuk setiap model, cuba primary key kemudian backup key jika ada.
-  for (const model of fallbackModels) {
-    for (const key of keys) {
-      if (!pending.length) break;
+  for (let start = 0; start < prompts.length; start += MAX_PARALLEL) {
+    let pending = prompts
+      .slice(start, start + MAX_PARALLEL)
+      .map((prompt, offset) => ({
+        index: start + offset,
+        prompt: prompt
+      }));
 
+    let attempt = 0;
+
+    while (pending.length) {
       const responses = UrlFetchApp.fetchAll(
-        pending.map(index => buildRequest_(prompts[index], key, model))
+        pending.map(item => buildRequest_(item.prompt))
       );
-      const nextPending = [];
 
-      responses.forEach((response, responseIndex) => {
-        const originalIndex = pending[responseIndex];
-        const code = response.getResponseCode();
+      const retryItems = [];
+      const retryResponses = [];
 
-        if (code >= 200 && code < 300) {
-          try {
-            results[originalIndex] = parseGeminiResponse_(response);
-            return;
-          } catch (error) {
-            lastErrorMessage = error.message || String(error);
-            nextPending.push(originalIndex);
-            return;
-          }
+      responses.forEach((response, i) => {
+        const item = pending[i];
+        const status = response.getResponseCode();
+
+        if ((status === 429 || status === 503) && attempt < MAX_RETRIES) {
+          retryItems.push(item);
+          retryResponses.push(response);
+          return;
         }
 
-        let message = '';
-        try {
-          const body = JSON.parse(response.getContentText() || '{}');
-          message = body.error?.message || '';
-        } catch (error) {}
-        lastErrorMessage = message || `Gemini ${model} gagal (HTTP ${code}).`;
-
-        // Cuba model/key seterusnya untuk ralat sementara, quota, model tidak tersedia,
-        // atau respons API lain. Ini mengelakkan satu model sibuk menggagalkan seluruh minggu.
-        nextPending.push(originalIndex);
+        results[item.index] = parseGeminiResponse_(response, model);
       });
 
-      pending = nextPending;
-      if (pending.length) Utilities.sleep(350);
-    }
-    if (!pending.length) break;
-  }
+      if (!retryItems.length) break;
 
-  // Jika Gemini masih gagal dan OpenRouter sudah dikonfigurasi, gunakan sebagai sandaran terakhir.
-  if (pending.length && properties.getProperty('OPENROUTER_API_KEY')) {
-    try {
-      const openRouterResults = callOpenRouterBatch_(pending.map(index => prompts[index]));
-      pending.forEach((originalIndex, i) => { results[originalIndex] = openRouterResults[i]; });
-      pending = [];
-    } catch (error) {
-      lastErrorMessage = error.message || lastErrorMessage;
+      const waitMs = getGeminiRetryDelayMs_(retryResponses, attempt);
+      Utilities.sleep(waitMs);
+      pending = retryItems;
+      attempt++;
     }
-  }
 
-  if (pending.length) {
-    throw new Error(
-      'Semua model AI sedang sibuk atau tidak tersedia. Sistem telah mencuba beberapa model sandaran. ' +
-      (lastErrorMessage ? `Ralat terakhir: ${lastErrorMessage}` : 'Sila cuba semula sebentar lagi.')
-    );
+    if (start + MAX_PARALLEL < prompts.length) {
+      Utilities.sleep(GROUP_PAUSE_MS);
+    }
   }
 
   return results;
 }
 
-function parseGeminiResponse_(response) {
-  const body = JSON.parse(response.getContentText());
-  if (response.getResponseCode() >= 300) throw new Error(body.error?.message || 'Gemini gagal menjana eRPH.');
+function getGeminiRetryDelayMs_(responses, attempt) {
+  let delayMs = Math.min(30000, 2000 * Math.pow(2, attempt));
+
+  responses.forEach(response => {
+    try {
+      const bodyText = response.getContentText();
+      const match =
+        bodyText.match(/retry in\s+([0-9.]+)s/i) ||
+        bodyText.match(/"retryDelay"\s*:\s*"([0-9.]+)s"/i);
+
+      if (match) {
+        delayMs = Math.max(delayMs, Math.ceil(Number(match[1]) * 1000) + 500);
+      }
+    } catch (error) {
+      // Gunakan exponential fallback.
+    }
+  });
+
+  return Math.min(delayMs, 35000);
+}
+
+function parseGeminiResponse_(response, model) {
+  const status = response.getResponseCode();
+  let body;
+
+  try {
+    body = JSON.parse(response.getContentText());
+  } catch (error) {
+    throw new Error(`Gemini (${model}) memulangkan respons bukan JSON. HTTP ${status}.`);
+  }
+
+  if (status >= 300) {
+    const message = body.error?.message || `Gemini gagal menjana eRPH. HTTP ${status}.`;
+
+    if (status === 429) {
+      throw new Error(
+        `Gemini (${model}) masih terkena had quota/rate limit selepas retry. ` +
+        `Pastikan GEMINI_API_KEY benar-benar milik projek Tier 1. Butiran: ${message}`
+      );
+    }
+
+    throw new Error(message);
+  }
+
   const text = body.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('Gemini tidak memulangkan kandungan eRPH.');
-  try { return JSON.parse(text); } catch (e) { throw new Error('Respons Gemini bukan JSON yang sah. Sila jana semula.'); }
-}
+  if (!text) throw new Error(`Gemini (${model}) tidak memulangkan kandungan eRPH.`);
 
-function callOpenRouterBatch_(prompts) {
-  const key = PropertiesService.getScriptProperties().getProperty('OPENROUTER_API_KEY');
-  if (!key) throw new Error('OPENROUTER_API_KEY belum disetkan dalam Script Properties.');
-  const model = PropertiesService.getScriptProperties().getProperty('OPENROUTER_MODEL') || 'openai/gpt-4o-mini';
-  const url = 'https://openrouter.ai/api/v1/chat/completions';
-  const requests = prompts.map(prompt => ({
-    url,
-    method: 'post',
-    contentType: 'application/json',
-    headers: { Authorization: `Bearer ${key}` },
-    payload: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
-      temperature: 0.35
-    }),
-    muteHttpExceptions: true
-  }));
-  return UrlFetchApp.fetchAll(requests).map(parseOpenRouterResponse_);
-}
-
-function parseOpenRouterResponse_(response) {
-  const body = JSON.parse(response.getContentText());
-  if (response.getResponseCode() >= 300) throw new Error(body.error?.message || 'OpenRouter gagal menjana eRPH.');
-  const text = body.choices?.[0]?.message?.content;
-  if (!text) throw new Error('OpenRouter tidak memulangkan kandungan eRPH.');
-  try { return JSON.parse(extractJson_(text)); } catch (e) { throw new Error('Respons OpenRouter bukan JSON yang sah. Sila jana semula.'); }
-}
-
-function extractJson_(text) {
-  const cleaned = String(text).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) return cleaned;
-  return cleaned.slice(start, end + 1);
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Respons Gemini (${model}) bukan JSON yang sah. Sila jana semula.`);
+  }
 }
 
 function writeErph_(sheet, slotStartRow, form, c, g, outputScript) {
@@ -710,7 +722,7 @@ function writeErph_(sheet, slotStartRow, form, c, g, outputScript) {
   put('D7', Number(form.week)); put('D9', day); put('D11', date);
   putSlot(1, 5, form.startTime); putSlot(1, 9, form.endTime); putSlot(2, 4, Number(form.form)); putSlot(2, 5, form.className); putSlot(3, 4, subject);
 
-  // DSKP/Sukatan kekal sebagai sumber Rumi. Dalam mod Jawi, AI hanya mentransliterasi paparan.
+  // DSKP/Sukatan dalam workbook ini sudah Jawi; formula dan susunan sel kekal sama.
   putSlot(4, 4, isJawi ? (g.theme || c.field) : c.field);
   putSlot(5, 4, isJawi ? (g.title || c.title) : c.title);
   putSlot(6, 4, g.skill);
@@ -736,12 +748,12 @@ function writeErph_(sheet, slotStartRow, form, c, g, outputScript) {
 }
 
 function normaliseOutputScript_(value) {
-  return String(value || 'rumi').toLowerCase() === 'jawi' ? 'jawi' : 'rumi';
+  // Versi ini khusus untuk workbook Jawi penuh.
+  return 'jawi';
 }
 
 function detectOutputScript_(sheet) {
-  const marker = String(sheet.getRange('B7').getDisplayValue()).trim();
-  return marker === 'ميڠݢو' ? 'jawi' : 'rumi';
+  return 'jawi';
 }
 
 function outputDay_(dayIndex, outputScript) {
@@ -751,7 +763,6 @@ function outputDay_(dayIndex, outputScript) {
 }
 
 function outputSubject_(subject, outputScript) {
-  if (normaliseOutputScript_(outputScript) !== 'jawi') return subject;
   if (subject === ERPH.SUBJECTS.PAI) return ERPH.SUBJECTS_JAWI.PAI;
   if (subject === ERPH.SUBJECTS.KKQ) return ERPH.SUBJECTS_JAWI.KKQ;
   return subject;
