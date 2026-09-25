@@ -52,6 +52,7 @@ function onOpen() {
     .addItem('Baiki strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
     .addSeparator()
     .addItem('Cipta salinan Jawi seluruh fail', 'createJawiWorkbookCopy')
+    .addItem('Tukar DSKP/Sukatan fail Jawi kepada Jawi', 'convertJawiCurriculumTabs')
     .addSeparator()
     .addItem('Tetapkan API Gemini', 'setGeminiApiKey')
     .addItem('Tetapkan API OpenRouter', 'setOpenRouterApiKey')
@@ -151,6 +152,150 @@ function convertWorkbookToJawi_(workbook, progressWorkbook) {
   });
 
   return { sheets: sheets.length, cells: changedCells, uniqueTexts: entries.length, candidates: candidateCells };
+}
+
+function hasArabicScript_(value) {
+  return /[؀-ۿ]/.test(String(value == null ? '' : value));
+}
+
+// Lajur teks kurikulum (indeks 0) yang ditukar. Kod SK, minggu RPT, pelajaran dan status AKTIF sengaja dikekalkan
+// kerana kod padankan minggu (digit) dan AKTIF berdasarkan nilai Rumi.
+const JAWI_CURRICULUM_TABS = ['DSKP_PAI_T4', 'DSKP_PAI_T5', 'SUKATAN_KKQ_T1', 'SUKATAN_KKQ_T2', 'SUKATAN_KKQ_T3'];
+const JAWI_CURRICULUM_COLUMNS = [4, 5, 6, 8, 9, 10, 11, 12];
+
+/**
+ * Tukar teks DSKP/Sukatan dalam fail Jawi kepada Jawi (sekali jalan, boleh dijalankan berulang untuk menyambung).
+ * Hanya sel yang masih Rumi dihantar ke AI; sel yang sudah ada tulisan Arab dilangkau.
+ */
+function convertJawiCurriculumTabs() {
+  const ui = SpreadsheetApp.getUi();
+  const answer = ui.alert(
+    'Tukar DSKP/Sukatan kepada Jawi',
+    'Sistem akan menukar teks Bidang, Tajuk, Alias, Standard Kandungan, Standard Pembelajaran, Objektif, Kata Kunci dan Sumber ' +
+    'dalam 5 tab DSKP/Sukatan pada fail e-RPH Jawi. Kod SK, Minggu RPT, Status AKTIF dan tab lain tidak diubah. ' +
+    'Jika terhenti (kuota/masa), jalankan semula untuk menyambung.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (answer !== ui.Button.OK) return;
+
+  const deadline = Date.now() + 4.5 * 60 * 1000;
+  const workbook = getWorkbook_('jawi');
+  const missingTabs = [];
+  const tabs = [];
+  const unique = new Map();
+
+  JAWI_CURRICULUM_TABS.forEach(name => {
+    const sheet = getWorksheet_(name, workbook);
+    if (!sheet) { missingTabs.push(name); return; }
+    const range = sheet.getDataRange();
+    const values = range.getValues();
+    const formulas = range.getFormulas();
+    tabs.push({ sheet, range, values, formulas });
+    for (let r = 1; r < values.length; r++) {
+      if (!values[r][0]) continue;
+      JAWI_CURRICULUM_COLUMNS.forEach(c => {
+        const value = values[r][c];
+        if (formulas[r][c] || typeof value !== 'string' || !needsJawi_(value)) return;
+        if (!unique.has(value)) unique.set(value, []);
+        unique.get(value).push({ tab: tabs.length - 1, r, c });
+      });
+    }
+  });
+
+  const entries = Array.from(unique.keys()).map((text, index) => ({ id: index + 1, text }));
+  if (!entries.length) {
+    ui.alert('Tiada teks Rumi tinggal dalam tab DSKP/Sukatan Jawi.' + (missingTabs.length ? '\nTab tidak ditemui: ' + missingTabs.join(', ') : ''));
+    return;
+  }
+
+  workbook.toast('Menukar ' + entries.length + ' teks unik kepada Jawi...', 'Smart eRPH AI — Jawi', 5);
+  const converted = transliterateJawiWithRetry_(entries, deadline, workbook);
+
+  let changedCells = 0;
+  const changedTabs = new Set();
+  entries.forEach(entry => {
+    const jawi = converted.map.get(entry.id);
+    if (!jawi) return;
+    unique.get(entry.text).forEach(loc => {
+      tabs[loc.tab].values[loc.r][loc.c] = jawi;
+      changedTabs.add(loc.tab);
+      changedCells++;
+    });
+  });
+
+  changedTabs.forEach(tabIndex => {
+    const tab = tabs[tabIndex];
+    const rows = tab.values.length - 1;
+    JAWI_CURRICULUM_COLUMNS.forEach(c => {
+      const column = [];
+      for (let r = 1; r < tab.values.length; r++) column.push([tab.formulas[r][c] || tab.values[r][c]]);
+      tab.sheet.getRange(tab.range.getRow() + 1, tab.range.getColumn() + c, rows, 1).setValues(column);
+    });
+  });
+  SpreadsheetApp.flush();
+
+  const remaining = entries.length - converted.map.size;
+  ui.alert(
+    remaining ? 'Penukaran separa — jalankan semula untuk menyambung' : 'Penukaran DSKP/Sukatan selesai',
+    'Sel ditukar: ' + changedCells + '\n' +
+    'Teks unik ditukar: ' + converted.map.size + ' / ' + entries.length + '\n' +
+    (remaining ? 'Baki belum ditukar: ' + remaining + '\n' : '') +
+    (converted.stopReason ? 'Sebab berhenti: ' + converted.stopReason + '\n' : '') +
+    (missingTabs.length ? 'Tab tidak ditemui: ' + missingTabs.join(', ') + '\n' : ''),
+    ui.ButtonSet.OK
+  );
+}
+
+function needsJawi_(value) {
+  const text = String(value).trim();
+  if (!text || !/[A-Za-z]/.test(text) || hasArabicScript_(text)) return false;
+  if (/^(https?:\/\/|www\.)/i.test(text)) return false;
+  return !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
+}
+
+function transliterateJawiWithRetry_(entries, deadline, progressWorkbook) {
+  const CHUNK_SIZE = 25;
+  const PARALLEL_CHUNKS = 2;
+  const MAX_ATTEMPTS = 3;
+  const chunks = [];
+  for (let i = 0; i < entries.length; i += CHUNK_SIZE) chunks.push(entries.slice(i, i + CHUNK_SIZE));
+  const map = new Map();
+  let stopReason = '';
+
+  for (let start = 0; start < chunks.length && !stopReason; start += PARALLEL_CHUNKS) {
+    if (Date.now() > deadline) { stopReason = 'had masa tercapai'; break; }
+    const group = chunks.slice(start, start + PARALLEL_CHUNKS);
+    let results = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !results; attempt++) {
+      try {
+        results = callGeminiBatch_(group.map(buildJawiPrompt_));
+      } catch (error) {
+        const message = String(error && error.message || error);
+        const quota = /quota|429|rate.?limit|RESOURCE_EXHAUSTED/i.test(message);
+        if (!quota || attempt === MAX_ATTEMPTS || Date.now() + 45000 > deadline) {
+          stopReason = quota ? 'kuota AI habis (tunggu seminit, kemudian jalankan semula)' : message;
+          break;
+        }
+        Utilities.sleep(45000);
+      }
+    }
+    if (!results) break;
+
+    results.forEach((result, index) => {
+      const items = result && Array.isArray(result.items) ? result.items : [];
+      const returned = new Map(items
+        .filter(item => item && Number.isFinite(Number(item.id)))
+        .map(item => [Number(item.id), String(item.text == null ? '' : item.text)]));
+      group[index].forEach(entry => {
+        const jawi = returned.get(entry.id);
+        if (jawi && hasArabicScript_(jawi)) map.set(entry.id, jawi);
+      });
+    });
+    if (progressWorkbook) {
+      progressWorkbook.toast('Kemajuan: ' + map.size + ' / ' + entries.length + ' teks', 'Smart eRPH AI — Jawi', 5);
+    }
+  }
+  return { map, stopReason };
 }
 
 function shouldTransliterateToJawi_(value) {
@@ -351,7 +496,7 @@ function generateAllActiveSlots() {
   const week = Number(sheet.getRange('D7').getValue());
   if (!week) throw new Error('Masukkan nombor minggu pada sel D7 dahulu.');
 
-  const jobs = getSlotsFromSheet_(sheet).map(slot => buildAutoJob_(sheet, Number(slot.value), week, date));
+  const jobs = getSlotsFromSheet_(sheet).map(slot => buildAutoJob_(sheet, Number(slot.value), week, date, outputScript));
   const results = callGeminiBatch_(jobs.map(job => buildPrompt_(job.form, job.curriculum, outputScript)));
   results.forEach(result => validateGeneratedOutput_(result, outputScript));
   jobs.forEach((job, index) => writeErph_(sheet, job.slotStartRow, job.form, job.curriculum, results[index], outputScript));
@@ -378,7 +523,7 @@ function generateWeekFromPwa_(payload) {
     sheet.getRange('D9').setValue(outputDay_(date.getDay(), outputScript));
     sheet.getRange('D11').setValue(date);
     getSlotsFromSheet_(sheet).forEach(slot => {
-      const job = buildAutoJob_(sheet, Number(slot.value), week, date);
+      const job = buildAutoJob_(sheet, Number(slot.value), week, date, outputScript);
       dayJobs.push({ ...job, sheet, sheetName });
     });
   });
@@ -421,7 +566,7 @@ function prepareClassroomFromPwa_(payload) {
   return { ok: true, outputScript, fileName: copy.getName(), fileUrl: copy.getUrl() };
 }
 
-function buildAutoJob_(sheet, slotStartRow, week, date) {
+function buildAutoJob_(sheet, slotStartRow, week, date, outputScript) {
   const form = {
     week,
     date: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
@@ -436,8 +581,8 @@ function buildAutoJob_(sheet, slotStartRow, week, date) {
     throw new Error(`Slot bermula baris ${slotStartRow} belum lengkap. Pastikan masa, Tingkatan, kelas dan mata pelajaran telah diisi.`);
   }
   const existingTitle = String(sheet.getRange(slotStartRow + 5, 4).getDisplayValue()).trim();
-  const curriculum = findCurriculumByExistingTitle_(form.subject, form.form, existingTitle) ||
-    findCurriculumByWeek_(form.subject, form.form, week);
+  const curriculum = findCurriculumByExistingTitle_(form.subject, form.form, existingTitle, outputScript) ||
+    findCurriculumByWeek_(form.subject, form.form, week, outputScript);
   return { slotStartRow, form, curriculum };
 }
 
@@ -448,8 +593,8 @@ function canonicalSubject_(value) {
   return '';
 }
 
-function findCurriculumByWeek_(subject, form, week) {
-  const options = getCurriculumOptions(subject, form).options;
+function findCurriculumByWeek_(subject, form, week, outputScript) {
+  const options = getCurriculumOptions(subject, form, outputScript).options;
   const match = options.find(item => {
     const numbers = String(item.week).match(/\d+/g);
     if (!numbers) return false;
@@ -460,19 +605,19 @@ function findCurriculumByWeek_(subject, form, week) {
   return match;
 }
 
-function findCurriculumByExistingTitle_(subject, form, existingTitle) {
+function findCurriculumByExistingTitle_(subject, form, existingTitle, outputScript) {
   if (!existingTitle) return null;
-  const normalise = text => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const normalise = text => String(text).toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, '');
   const target = normalise(existingTitle);
   if (!target) return null;
-  return getCurriculumOptions(subject, form).options.find(item =>
+  return getCurriculumOptions(subject, form, outputScript).options.find(item =>
     [item.title, item.alias].some(value => normalise(value) === target)
   ) || null;
 }
 
-function getCurriculumOptions(subject, form) {
+function getCurriculumOptions(subject, form, outputScript) {
   const sourceName = getSourceSheetName_(subject, Number(form));
-  const sheet = getWorksheet_(sourceName);
+  const sheet = getWorksheet_(sourceName, getWorkbook_(outputScript));
   if (!sheet) throw new Error(`Tab data ${sourceName} tidak ditemui dalam fail eRPH yang disambungkan.`);
 
   const values = sheet.getDataRange().getDisplayValues();
@@ -509,7 +654,7 @@ function buildPrompt_(form, c, outputScript) {
   const outputInstruction = mode === 'jawi'
     ? `OUTPUT JAWI — WAJIB
 Semua nilai teks yang anda jana hendaklah dalam tulisan Jawi Bahasa Melayu Malaysia berdasarkan Pedoman Ejaan Jawi Yang Disempurnakan.
-Jangan terjemah maksud kurikulum. Untuk medan theme, title, standardContent dan standardLearning, transliterasi kandungan sumber yang diberi dengan setepat mungkin tanpa menambah atau membuang fakta.
+Jangan terjemah maksud kurikulum. Rujukan kurikulum di bawah kebiasaannya sudah dalam Jawi: salin tepat ke medan theme, title, standardContent dan standardLearning tanpa mengubah ejaan. Jika sesuatu rujukan masih Rumi, transliterasikannya dengan setepat mungkin tanpa menambah atau membuang fakta.
 Kekalkan nombor, kod standard, PAI, KKQ, DSKP, KSSM, PBD, PA21, KBAT, KBKK, EMK, i-THINK dan nama aktiviti antarabangsa jika perlu.
 PENTING: medan assessmentTypes ialah kod sistem. Nilainya MESTI kekal dalam Rumi dan hanya boleh menggunakan: "Amali / Eksperimen", "Projek", "Pembentangan", "Ujian", "Peperiksaan", "Latihan / Kerja Rumah", "Lembaran Kerja", "Pemerhatian", "Kuiz", "Lisan", "Tugasan".`
     : 'OUTPUT RUMI — Gunakan Bahasa Melayu Rumi yang kemas dan standard.';
@@ -643,16 +788,17 @@ function writeErph_(sheet, slotStartRow, form, c, g, outputScript) {
   put('D7', Number(form.week)); put('D9', day); put('D11', date);
   putSlot(1, 5, form.startTime); putSlot(1, 9, form.endTime); putSlot(2, 4, Number(form.form)); putSlot(2, 5, form.className); putSlot(3, 4, subject);
 
-  // DSKP/Sukatan kekal sebagai sumber Rumi. Dalam mod Jawi, AI hanya mentransliterasi paparan.
-  putSlot(4, 4, isJawi ? (g.theme || c.field) : c.field);
-  putSlot(5, 4, isJawi ? (g.title || c.title) : c.title);
+  // Mod Jawi: guna teks kurikulum terus jika tab DSKP/Sukatan Jawi sudah ditukar; jika masih Rumi, guna transliterasi AI.
+  const curriculumText = (source, generated) => (isJawi && !hasArabicScript_(source) ? (generated || source) : source);
+  putSlot(4, 4, curriculumText(c.field, g.theme));
+  putSlot(5, 4, curriculumText(c.title, g.title));
   putSlot(6, 4, g.skill);
-  putSlot(7, 4, isJawi ? (g.standardContent || c.standardContent) : c.standardContent);
-  putSlot(8, 4, isJawi ? (g.standardLearning || c.standardLearning) : c.standardLearning);
+  putSlot(7, 4, curriculumText(c.standardContent, g.standardContent));
+  putSlot(8, 4, curriculumText(c.standardLearning, g.standardLearning));
   putSlotList([11, 12, 13], g.objectives); putSlotList([14, 15, 16], g.successCriteria);
   putSlotList([18, 19, 20], g.starter); putSlotList([22, 23, 24], g.activity);
   putSlotList([26, 27, 28], g.explanation); putSlotList([30, 31, 32], g.closure); putSlotList([34, 35, 36], g.assessmentDetails);
-  putSlot(37, 4, g.references || c.source); putSlot(42, 4, g.reflection); putSlot(47, 4, g.followUp);
+  putSlot(37, 4, isJawi && hasArabicScript_(c.source) ? c.source : (g.references || c.source)); putSlot(42, 4, g.reflection); putSlot(47, 4, g.followUp);
 
   // Lajur sokongan sebelah kanan template.
   putSlot(1, 13, isJawi ? 'ستراتيݢي ڤڠاجرن دان ڤمبلاجرن' : 'STRATEGI P&P');
