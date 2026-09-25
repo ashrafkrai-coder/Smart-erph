@@ -61,6 +61,7 @@ function onOpen() {
     .createMenu('Smart eRPH AI — Jawi')
     .addItem('Jana semua slot tab aktif (Jawi)', 'generateAllActiveSlots')
     .addItem('Baiki strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
+    .addItem('Tetapkan tulisan Jawi bermula dari kanan', 'applyJawiDirectionToWorkbook')
     .addSeparator()
     .addItem('Cipta salinan Jawi seluruh fail', 'createJawiWorkbookCopy')
     .addItem('Tukar DSKP/Sukatan fail Jawi kepada Jawi', 'convertJawiCurriculumTabs')
@@ -917,11 +918,43 @@ function writeErph_(sheet, slotStartRow, form, c, g, outputScript) {
   putSlot(15, 13, g.kbkk); putSlot(17, 13, g.iThink); putSlot(20, 13, g.values); putSlot(23, 13, g.thinkingSkill);
   putSlot(26, 13, g.multipleIntelligences); putSlot(31, 13, g.kbatCurriculum); putSlot(33, 13, g.kbatCoCurriculum); putSlot(36, 13, g.emk);
 
-  Object.values(ERPH.ASSESSMENT_ROWS).forEach(row => sheet.getRange(slotStartRow + row - 14, 16).setValue(false));
-  (g.assessmentTypes || []).forEach(type => {
-    const row = ERPH.ASSESSMENT_ROWS[type];
-    if (row) sheet.getRange(slotStartRow + row - 14, 16).setValue(true);
+  // Tulisan Jawi bermula dari kanan bagi seluruh blok slot (lajur B hingga O; lajur P ialah kotak tick).
+  if (isJawi) applyJawiDirection_(sheet.getRange(slotStartRow, 2, 50, 14));
+
+  // Kaedah pentaksiran dipaparkan sebagai kotak tick, bukan teks TRUE/FALSE.
+  const assessmentRows = Object.values(ERPH.ASSESSMENT_ROWS);
+  const firstRow = Math.min(...assessmentRows);
+  const selectedRows = (g.assessmentTypes || []).map(type => ERPH.ASSESSMENT_ROWS[type]).filter(Boolean);
+  const checkboxValues = [];
+  for (let row = firstRow; row <= Math.max(...assessmentRows); row++) checkboxValues.push([selectedRows.includes(row)]);
+  const checkboxRange = sheet.getRange(slotStartRow + firstRow - 14, 16, checkboxValues.length, 1);
+  checkboxRange.insertCheckboxes();
+  checkboxRange.setValues(checkboxValues);
+}
+
+// Arah teks kanan-ke-kiri. Sel berjajaran tengah (tajuk/label) dikekalkan di tengah; selebihnya dijajar ke kanan.
+function applyJawiDirection_(range) {
+  const alignments = range.getHorizontalAlignments().map(row =>
+    row.map(value => (/center/i.test(String(value)) ? 'center' : 'right'))
+  );
+  range.setTextDirection(SpreadsheetApp.TextDirection.RIGHT_TO_LEFT);
+  range.setHorizontalAlignments(alignments);
+}
+
+function applyJawiDirectionToWorkbook() {
+  const workbook = getWorkbook_();
+  const tabs = [...ERPH.DAYS, ...JAWI_CURRICULUM_TABS];
+  let done = 0;
+  tabs.forEach(name => {
+    const sheet = getWorksheet_(name, workbook);
+    if (!sheet || !sheet.getLastRow()) return;
+    // Tab hari: lajur P (16) ialah kotak tick, jadi hanya lajur A hingga O diubah.
+    const columns = ERPH.DAYS.includes(name) ? Math.min(15, sheet.getLastColumn()) : sheet.getLastColumn();
+    applyJawiDirection_(sheet.getRange(1, 1, sheet.getLastRow(), columns));
+    done++;
   });
+  SpreadsheetApp.flush();
+  SpreadsheetApp.getUi().alert(`Selesai: tulisan dalam ${done} tab kini bermula dari kanan.`);
 }
 
 function normaliseOutputScript_(value) {
