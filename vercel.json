@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/generate-erph.js": {
+      "maxDuration": 300
+    }
+  }
+}

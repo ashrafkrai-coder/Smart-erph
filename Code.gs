@@ -572,18 +572,26 @@ function prepareClassroomFromPwa_(payload) {
 }
 
 function buildAutoJob_(sheet, slotStartRow, week, date, outputScript) {
+  const rawSubject = String(sheet.getRange(slotStartRow + 3, 4).getDisplayValue()).trim();
+  const rawForm = sheet.getRange(slotStartRow + 2, 4).getDisplayValue();
   const form = {
     week,
     date: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
     slotStartRow,
-    form: Number(sheet.getRange(slotStartRow + 2, 4).getValue()),
+    form: parseFormNumber_(rawForm),
     className: String(sheet.getRange(slotStartRow + 2, 5).getDisplayValue()).trim(),
-    subject: canonicalSubject_(sheet.getRange(slotStartRow + 3, 4).getDisplayValue()),
+    subject: canonicalSubject_(rawSubject),
     startTime: String(sheet.getRange(slotStartRow + 1, 5).getDisplayValue()).trim(),
     endTime: String(sheet.getRange(slotStartRow + 1, 9).getDisplayValue()).trim()
   };
-  if (!form.form || !form.className || !form.subject || !form.startTime || !form.endTime) {
-    throw new Error(`Slot bermula baris ${slotStartRow} belum lengkap. Pastikan masa, Tingkatan, kelas dan mata pelajaran telah diisi.`);
+  const missing = [];
+  if (!form.startTime) missing.push(`masa mula (E${slotStartRow + 1})`);
+  if (!form.endTime) missing.push(`masa tamat (I${slotStartRow + 1})`);
+  if (!form.form) missing.push(`Tingkatan (D${slotStartRow + 2}${rawForm ? `: "${rawForm}" bukan nombor` : ''})`);
+  if (!form.className) missing.push(`kelas (E${slotStartRow + 2})`);
+  if (!form.subject) missing.push(`mata pelajaran (D${slotStartRow + 3}${rawSubject ? `: "${rawSubject}" tidak dikenali sebagai PAI/KKQ` : ''})`);
+  if (missing.length) {
+    throw new Error(`Slot bermula baris ${slotStartRow} di tab ${sheet.getName()} belum lengkap: ${missing.join('; ')}.`);
   }
   const existingTitle = String(sheet.getRange(slotStartRow + 5, 4).getDisplayValue()).trim();
   const curriculum = findCurriculumByExistingTitle_(form.subject, form.form, existingTitle, outputScript) ||
@@ -605,9 +613,33 @@ function canonicalSubject_(value) {
     ERPH.SUBJECTS_JAWI.KKQ, ...ERPH.SUBJECT_ALIASES_JAWI.KKQ
   ].map(normaliseForMatch_);
 
+  if (!key) return '';
   if (paiAliases.includes(key)) return ERPH.SUBJECTS.PAI;
   if (kkqAliases.includes(key)) return ERPH.SUBJECTS.KKQ;
+
+  // Padanan longgar untuk ejaan Jawi/Rumi yang sedikit berbeza.
+  if (/kkq|ككق|قران|قرءان|quran/.test(key)) return ERPH.SUBJECTS.KKQ;
+  if (/pai|ڤاي|islam|اسلام/.test(key)) return ERPH.SUBJECTS.PAI;
   return '';
+}
+
+function normaliseForMatch_(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[ً-ٰٟـ​-‏﻿]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/[ىی]/g, 'ي')
+    .replace(/[کڪ]/g, 'ك')
+    .replace(/[ەۀة]/g, 'ه')
+    .replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, d => String(d.charCodeAt(0) - 0x06F0))
+    .replace(/[^a-z0-9؀-ۿ]+/g, '');
+}
+
+function parseFormNumber_(value) {
+  const digits = normaliseForMatch_(value).match(/\d+/);
+  return digits ? Number(digits[0]) : 0;
 }
 
 function findCurriculumByWeek_(subject, form, week, outputScript) {
