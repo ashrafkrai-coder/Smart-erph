@@ -62,6 +62,7 @@ function onOpen() {
     .addItem('Jana semua slot tab aktif (Jawi)', 'generateAllActiveSlots')
     .addItem('Baiki strategi murid & kolaboratif yang kosong', 'fillMissingStudentCentredStrategies')
     .addItem('Tetapkan tulisan Jawi bermula dari kanan', 'applyJawiDirectionToWorkbook')
+    .addItem('Tukar TRUE/FALSE kepada kotak tick', 'convertAssessmentToCheckboxes')
     .addSeparator()
     .addItem('Cipta salinan Jawi seluruh fail', 'createJawiWorkbookCopy')
     .addItem('Tukar DSKP/Sukatan fail Jawi kepada Jawi', 'convertJawiCurriculumTabs')
@@ -922,14 +923,36 @@ function writeErph_(sheet, slotStartRow, form, c, g, outputScript) {
   if (isJawi) applyJawiDirection_(sheet.getRange(slotStartRow, 2, 50, 14));
 
   // Kaedah pentaksiran dipaparkan sebagai kotak tick, bukan teks TRUE/FALSE.
-  const assessmentRows = Object.values(ERPH.ASSESSMENT_ROWS);
-  const firstRow = Math.min(...assessmentRows);
   const selectedRows = (g.assessmentTypes || []).map(type => ERPH.ASSESSMENT_ROWS[type]).filter(Boolean);
-  const checkboxValues = [];
-  for (let row = firstRow; row <= Math.max(...assessmentRows); row++) checkboxValues.push([selectedRows.includes(row)]);
-  const checkboxRange = sheet.getRange(slotStartRow + firstRow - 14, 16, checkboxValues.length, 1);
+  const checkboxRange = getAssessmentRange_(sheet, slotStartRow);
+  const firstRow = Math.min(...Object.values(ERPH.ASSESSMENT_ROWS));
   checkboxRange.insertCheckboxes();
-  checkboxRange.setValues(checkboxValues);
+  checkboxRange.setValues(checkboxRange.getValues().map((_, i) => [selectedRows.includes(firstRow + i)]));
+}
+
+function getAssessmentRange_(sheet, slotStartRow) {
+  const rows = Object.values(ERPH.ASSESSMENT_ROWS);
+  const firstRow = Math.min(...rows);
+  return sheet.getRange(slotStartRow + firstRow - 14, 16, Math.max(...rows) - firstRow + 1, 1);
+}
+
+// Tukar teks TRUE/FALSE sedia ada kepada kotak tick tanpa menjana semula. Nilai tick dikekalkan.
+function convertAssessmentToCheckboxes() {
+  const workbook = getWorkbook_();
+  let slots = 0;
+  ERPH.DAYS.forEach(day => {
+    const sheet = getWorksheet_(day, workbook);
+    if (!sheet) return;
+    getSlotsFromSheet_(sheet).forEach(slot => {
+      const range = getAssessmentRange_(sheet, Number(slot.value));
+      const values = range.getDisplayValues().map(row => [/^(true|benar|✓|✔|☑)$/i.test(String(row[0]).trim())]);
+      range.insertCheckboxes();
+      range.setValues(values);
+      slots++;
+    });
+  });
+  SpreadsheetApp.flush();
+  SpreadsheetApp.getUi().alert(`Selesai: kaedah pentaksiran dalam ${slots} slot kini menggunakan kotak tick.`);
 }
 
 // Arah teks kanan-ke-kiri. Sel berjajaran tengah (tajuk/label) dikekalkan di tengah; selebihnya dijajar ke kanan.
